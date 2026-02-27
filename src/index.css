@@ -1,0 +1,27 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Single source of truth for header height: mobile 320px+ uses 48px, tablet 640px+ uses 56px. lg (1024px+) sidebar uses its own values. */
+:root {
+  --header-height: 3rem;
+}
+@media (min-width: 640px) {
+  :root {
+    --header-height: 3.5rem;
+  }
+}
+
+@layer base {
+  html {
+    font-size: 16px;
+    -webkit-text-size-adjust: 100%;
+  }
+  body {
+    @apply bg-surface text-gray-800 antialiased min-h-screen;
+    font-family: theme('fontFamily.sans');
+  }
+  #root {
+    @apply min-h-screen flex flex-col;
+  }
+}
