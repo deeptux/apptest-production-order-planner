@@ -6,9 +6,10 @@ import SectionTabs, { SECTIONS } from './SectionTabs';
 import PlanTable from './PlanTable';
 import GanttChart from './GanttChart';
 import { OutputByProductChart } from './OutputByProductChart';
+import OverrideQueue from './OverrideQueue';
 
 export default function DashboardView() {
-  const { rows, planDate, addBatch } = usePlan();
+  const { rows, planDate, addBatch, deleteBatch } = usePlan();
   const [section, setSection] = useState('mixing');
 
   const handleExport = useCallback(() => {
@@ -40,6 +41,7 @@ export default function DashboardView() {
 
   return (
     <div className="p-4 sm:p-6 flex flex-col gap-6 max-w-[1600px] xl:max-w-[1920px] 2xl:max-w-[2200px] mx-auto w-full min-w-0">
+      <OverrideQueue />
       <StatsCards />
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 min-w-0">
         <GanttChart />
@@ -52,10 +54,11 @@ export default function DashboardView() {
               <PlanTable
                 sectionId={sec.id}
                 onAddBatch={addBatch}
+                onDeleteBatch={deleteBatch}
                 onReorder={() => {}}
                 onExport={handleExportClick}
                 onExportPdf={() => window.print()}
-                onLiveView={() => window.open('/#live', '_blank')}
+                onLiveView={() => window.open('/live', '_blank')}
               />
             </Tabs.Content>
           ))}

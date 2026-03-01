@@ -1,4 +1,15 @@
-import { getStageDurationsForProduct, getTotalProcessMinutes } from '../data/skuProcessDurations.js';
+import { getStageDurationsForProduct as getFromRecipe, getTotalProcessMinutes as getTotalFromRecipe } from '../store/recipeStore.js';
+import { getStageDurationsForProduct as getFromSku, getTotalProcessMinutes as getTotalFromSku } from '../data/skuProcessDurations.js';
+
+function getStageDurationsForProduct(productName) {
+  return getFromRecipe(productName) ?? getFromSku(productName);
+}
+
+function getTotalProcessMinutes(productName) {
+  const total = getTotalFromRecipe(productName);
+  if (total > 0) return total;
+  return getTotalFromSku(productName) ?? 0;
+}
 
 const DAY_MINUTES = 24 * 60;
 
@@ -69,6 +80,22 @@ export function computeStageDurationsForRow(row) {
   if (sku) return { ...sku };
   const total = computeTotalMinutesForRow(row);
   return computeStageDurations(total);
+}
+
+/**
+ * Recompute endDough (end of mixing) and endBatch from row's startSponge and process durations.
+ * Returns { endDough, endBatch } as "HH:MM" or existing values if total minutes are invalid.
+ */
+export function recomputeEndTimesForRow(row) {
+  const stages = computeStageDurationsForRow(row);
+  const total = stages.mixing + stages.makeupDividing + stages.makeupPanning + stages.baking + stages.packaging;
+  if (!total || !row.startSponge || typeof row.startSponge !== 'string') {
+    return { endDough: row.endDough ?? '00:00', endBatch: row.endBatch ?? '00:00' };
+  }
+  const mixingMinutes = stages.mixing ?? 0;
+  const endDough = addMinutesToTime(row.startSponge, mixingMinutes);
+  const endBatch = addMinutesToTime(row.startSponge, total);
+  return { endDough, endBatch };
 }
 
 export { DAY_MINUTES };

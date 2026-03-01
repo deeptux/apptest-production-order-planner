@@ -1,7 +1,8 @@
-import { Plus, ArrowUpDown, Download, FileText, Eye } from 'lucide-react';
+import { Plus, ArrowUpDown, Download, FileText, Eye, Trash2 } from 'lucide-react';
 import { useMemo } from 'react';
 import { usePlan } from '../context/PlanContext';
 import { computeStageDurationsForRow } from '../utils/stageDurations';
+import { getCapacityForProduct } from '../store/capacityProfileStore';
 
 const MIXING_COLUMNS = [
   { key: 'product', label: 'Product' },
@@ -63,7 +64,7 @@ const SECTION_COLUMNS = {
   ],
 };
 
-export default function PlanTable({ sectionId, onAddBatch, onReorder, onExport, onExportPdf, onLiveView }) {
+export default function PlanTable({ sectionId, onAddBatch, onDeleteBatch, onReorder, onExport, onExportPdf, onLiveView }) {
   const { rows } = usePlan();
   const columns = SECTION_COLUMNS[sectionId] || MIXING_COLUMNS;
 
@@ -105,6 +106,11 @@ export default function PlanTable({ sectionId, onAddBatch, onReorder, onExport, 
                   {label}
                 </th>
               ))}
+              {onDeleteBatch && (
+                <th className="text-left py-2 sm:py-3 px-3 sm:px-4 font-semibold text-gray-700 whitespace-nowrap text-inherit w-12">
+                  Actions
+                </th>
+              )}
             </tr>
           </thead>
           <tbody>
@@ -114,13 +120,27 @@ export default function PlanTable({ sectionId, onAddBatch, onReorder, onExport, 
                   const value =
                     key === 'procTime'
                       ? getProcTimeForSection(row.id)
-                      : row[key] ?? '—';
+                      : key === 'capacity'
+                        ? (getCapacityForProduct(row.product, row.productionLineId) ?? row[key] ?? '—')
+                        : row[key] ?? '—';
                   return (
                     <td key={key} className="py-2 sm:py-2.5 px-3 sm:px-4 text-gray-800 text-inherit">
                       {value}
                     </td>
                   );
                 })}
+                {onDeleteBatch && (
+                  <td className="py-2 sm:py-2.5 px-3 sm:px-4">
+                    <button
+                      type="button"
+                      onClick={() => onDeleteBatch(row.id)}
+                      className="p-1.5 rounded border border-gray-300 hover:bg-red-50 hover:border-red-300 text-gray-600 hover:text-red-700 transition-colors"
+                      aria-label="Delete row"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </td>
+                )}
               </tr>
             ))}
           </tbody>

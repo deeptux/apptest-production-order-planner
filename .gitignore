@@ -10,5 +10,12 @@ yarn-error.log*
 pnpm-debug.log*
 .env
 .env.*
-!.env.example
+.env.example
 .cursor/
+
+# Goal and reference assets (spreadsheets, docs) — not committed
+_goal/
+_references/
+
+# Dev-only extraction scripts and outputs — not committed
+scripts/
