@@ -122,7 +122,7 @@ export default function RecipesView() {
                   <select
                     value={selectedLineId}
                     onChange={(e) => setSelectedLineId(e.target.value)}
-                    className="border border-gray-300 rounded-lg px-2 py-1.5 text-inherit text-xs sm:text-sm md:text-base max-w-[200px] w-full bg-transparent font-semibold"
+                    className="border border-gray-300 rounded-lg px-2 py-1.5 text-inherit text-xs sm:text-sm md:text-base w-full bg-transparent font-semibold min-w-[7rem] sm:min-w-[8rem] md:min-w-[10rem] max-w-[200px]"
                     aria-label="Production line filter"
                   >
                     <option value="">All</option>
@@ -131,6 +131,7 @@ export default function RecipesView() {
                     ))}
                   </select>
                 </th>
+                <th className="text-left py-2 sm:py-3 px-2 sm:px-4 w-24 sm:w-28 whitespace-nowrap bg-surface-card-warm">Actions</th>
                 <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 whitespace-nowrap bg-surface-card-warm">
                   Product name
                 </th>
@@ -142,7 +143,6 @@ export default function RecipesView() {
                 <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 whitespace-nowrap bg-surface-card-warm">
                   Total Process Time (mins)
                 </th>
-                <th className="text-left py-2 sm:py-3 px-2 sm:px-4 w-24 sm:w-28 whitespace-nowrap bg-surface-card-warm">Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -169,7 +169,7 @@ export default function RecipesView() {
                         <select
                           value={r.productionLineId ?? ''}
                           onChange={(e) => updateDraftField('productionLineId', e.target.value)}
-                          className="border border-gray-300 rounded px-2 py-1 text-gray-900 bg-white text-inherit min-w-[120px]"
+                          className="border border-gray-300 rounded px-2 py-1 text-gray-900 bg-white text-inherit min-w-[7rem] sm:min-w-[8rem] md:min-w-[9rem]"
                         >
                           {lines.map((l) => (
                             <option key={l.id} value={l.id}>{l.name}</option>
@@ -179,57 +179,6 @@ export default function RecipesView() {
                         (selectedLineId ? lines.find((l) => l.id === selectedLineId)?.name : lines.find((l) => l.id === recipe.productionLineId)?.name) ?? '—'
                       )}
                     </td>
-                    <td className="py-2 sm:py-2.5 px-2 sm:px-4">
-                      <input
-                        type="text"
-                        value={r.name ?? ''}
-                        onChange={(e) => updateDraftField('name', e.target.value)}
-                        disabled={!isEditing}
-                        className={isEditing ? 'border border-gray-300 rounded px-2 py-1 text-gray-900 bg-white min-w-[120px] sm:min-w-[140px] text-inherit' : 'border border-gray-200 rounded px-2 py-1 text-gray-700 bg-gray-50 min-w-[120px] sm:min-w-[140px] cursor-not-allowed text-inherit'}
-                      />
-                    </td>
-                    {processesForColumns.map((proc) => {
-                      const editProfiles = isEditing && editLineId ? getMixingProfiles(editLineId, proc.id) : [];
-                      const currentMins = Number(pd[proc.id]) || 0;
-                      const hasExplicitProfile = editProfiles.some((p) => getProfileTotalMinutes(editLineId, proc.id, p.id) === currentMins);
-                      const selectedProfileId = hasExplicitProfile
-                        ? (editProfiles.find((p) => getProfileTotalMinutes(editLineId, proc.id, p.id) === currentMins)?.id ?? '')
-                        : '';
-                      return (
-                        <td key={proc.id} className="py-2 sm:py-2.5 px-2 sm:px-4">
-                          {isEditing && editProfiles.length > 0 ? (
-                            <select
-                              value={selectedProfileId}
-                              onChange={(e) => {
-                                const pid = e.target.value;
-                                const mins = pid ? getProfileTotalMinutes(editLineId, proc.id, pid) : 0;
-                                updateDraftProcessDuration(proc.id, mins);
-                              }}
-                              className={inputClass.replace('cursor-not-allowed', '')}
-                            >
-                              <option value="">— Select —</option>
-                              {editProfiles.map((p) => (
-                                <option key={p.id} value={p.id}>
-                                  {getProfileTotalMinutes(editLineId, proc.id, p.id)} min
-                                </option>
-                              ))}
-                            </select>
-                          ) : isEditing && editProfiles.length === 0 ? (
-                            <span className="text-gray-500 text-xs sm:text-sm">N/A</span>
-                          ) : (
-                            <input
-                              type="number"
-                              min={0}
-                              value={pd[proc.id] ?? ''}
-                              onChange={(e) => updateDraftProcessDuration(proc.id, e.target.value)}
-                              disabled={!isEditing}
-                              className={inputClass}
-                            />
-                          )}
-                        </td>
-                      );
-                    })}
-                    <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-700 tabular-nums select-none">{displayTotal}</td>
                     <td className="py-2 sm:py-2.5 px-2 sm:px-4">
                       <div className="flex items-center gap-1">
                         {isEditing ? (
@@ -273,6 +222,57 @@ export default function RecipesView() {
                         )}
                       </div>
                     </td>
+                    <td className="py-2 sm:py-2.5 px-2 sm:px-4">
+                      <input
+                        type="text"
+                        value={r.name ?? ''}
+                        onChange={(e) => updateDraftField('name', e.target.value)}
+                        disabled={!isEditing}
+                        className={isEditing ? 'border border-gray-300 rounded px-2 py-1 text-gray-900 bg-white min-w-[120px] sm:min-w-[140px] text-inherit' : 'border border-gray-200 rounded px-2 py-1 text-gray-700 bg-gray-50 min-w-[120px] sm:min-w-[140px] cursor-not-allowed text-inherit'}
+                      />
+                    </td>
+                    {processesForColumns.map((proc) => {
+                      const editProfiles = isEditing && editLineId ? getMixingProfiles(editLineId, proc.id) : [];
+                      const currentMins = Number(pd[proc.id]) || 0;
+                      const hasExplicitProfile = editProfiles.some((p) => getProfileTotalMinutes(editLineId, proc.id, p.id) === currentMins);
+                      const selectedProfileId = hasExplicitProfile
+                        ? (editProfiles.find((p) => getProfileTotalMinutes(editLineId, proc.id, p.id) === currentMins)?.id ?? '')
+                        : '';
+                      return (
+                        <td key={proc.id} className="py-2 sm:py-2.5 px-2 sm:px-4">
+                          {isEditing && editProfiles.length > 0 ? (
+                            <select
+                              value={selectedProfileId}
+                              onChange={(e) => {
+                                const pid = e.target.value;
+                                const mins = pid ? getProfileTotalMinutes(editLineId, proc.id, pid) : 0;
+                                updateDraftProcessDuration(proc.id, mins);
+                              }}
+                              className={`${inputClass.replace('cursor-not-allowed', '')} min-w-[5.5rem] sm:min-w-[6rem] md:min-w-[7rem]`}
+                            >
+                              <option value="">— Select —</option>
+                              {editProfiles.map((p) => (
+                                <option key={p.id} value={p.id}>
+                                  {getProfileTotalMinutes(editLineId, proc.id, p.id)} min
+                                </option>
+                              ))}
+                            </select>
+                          ) : isEditing && editProfiles.length === 0 ? (
+                            <span className="text-gray-500 text-xs sm:text-sm">N/A</span>
+                          ) : (
+                            <input
+                              type="number"
+                              min={0}
+                              value={pd[proc.id] ?? ''}
+                              onChange={(e) => updateDraftProcessDuration(proc.id, e.target.value)}
+                              disabled={!isEditing}
+                              className={inputClass}
+                            />
+                          )}
+                        </td>
+                      );
+                    })}
+                    <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-700 tabular-nums select-none">{displayTotal}</td>
                   </tr>
                 );
               })}
@@ -296,7 +296,7 @@ export default function RecipesView() {
                   productionLineId: (e.target.value || lines[0]?.id) ?? '',
                   processDurations: {},
                 }))}
-                className="w-full border border-gray-300 rounded px-3 py-2 text-gray-900 text-sm sm:text-base bg-white"
+                className="w-full border border-gray-300 rounded px-3 py-2 text-gray-900 text-sm sm:text-base bg-white min-w-[10rem]"
               >
                 {lines.map((l) => (
                   <option key={l.id} value={l.id}>{l.name}</option>
@@ -346,7 +346,7 @@ export default function RecipesView() {
                                 processDurations: { ...(p.processDurations || {}), [proc.id]: mins },
                               }));
                             }}
-                            className="w-full border border-gray-300 rounded px-3 py-2 text-gray-900 text-sm bg-white"
+                            className="w-full border border-gray-300 rounded px-3 py-2 text-gray-900 text-sm bg-white min-w-[6rem] sm:min-w-[7rem]"
                           >
                             <option value="">— Select —</option>
                             {profiles.map((p) => (

@@ -17,7 +17,7 @@ const DEFAULT_MACHINES = [
   { id: 'm-06', name: 'Divider', productionLineId: null, processId: null },
   { id: 'm-07', name: 'Dividing Table', productionLineId: null, processId: null },
   { id: 'm-08', name: 'Dough Scale (Dividing)', productionLineId: null, processId: null },
-  { id: 'm-09', name: 'Bench (Floor Time)', productionLineId: null, processId: null },
+  { id: 'm-09', name: 'Bench Time', productionLineId: null, processId: null },
   { id: 'm-10', name: 'Molder', productionLineId: null, processId: null },
   { id: 'm-11', name: 'Panning Table', productionLineId: null, processId: null },
   { id: 'm-12', name: 'Pan Loader', productionLineId: null, processId: null },
@@ -35,6 +35,7 @@ const DEFAULT_MACHINES = [
   { id: 'm-24', name: 'Bagger', productionLineId: null, processId: null },
   { id: 'm-25', name: 'Sealer', productionLineId: null, processId: null },
   { id: 'm-26', name: 'Case Packer', productionLineId: null, processId: null },
+  { id: 'm-27', name: 'Floor Time', productionLineId: null, processId: null },
 ];
 
 function loadMachines() {
@@ -59,6 +60,17 @@ function loadMachines() {
 
 let machines = loadMachines();
 
+/**
+ * Reset the machines list to the current DEFAULT_MACHINES (from code).
+ * Use this after updating DEFAULT_MACHINES so the app uses the new list instead of old localStorage data.
+ * Warning: removes any machines added only in the UI that are not in DEFAULT_MACHINES.
+ */
+export function resetMachinesToDefaults() {
+  machines = DEFAULT_MACHINES.map((m) => ({ ...m }));
+  persist();
+  return machines.map((m) => ({ ...m }));
+}
+
 function persist() {
   try {
     localStorage.setItem(MACHINES_STORAGE_KEY, JSON.stringify(machines));
@@ -66,6 +78,7 @@ function persist() {
 }
 
 export function getMachines() {
+  resetMachinesToDefaults()
   return machines.map((m) => ({ ...m }));
 }
 

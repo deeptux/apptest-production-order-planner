@@ -3,8 +3,11 @@
 @tailwind utilities;
 
 /* Single source of truth for header height: mobile 320px+ uses 48px, tablet 640px+ uses 56px. lg (1024px+) sidebar uses its own values. */
+/* Primary brand color (logo background): rgb(235, 113, 93) – used by Tailwind theme and header/sidebar/buttons */
 :root {
   --header-height: 3rem;
+  --color-primary: rgb(235, 113, 93);
+  --color-primary-dark: rgb(216, 99, 79);
 }
 @media (min-width: 640px) {
   :root {

@@ -1,4 +1,4 @@
-import { Bell, Settings, User, LogOut, Wheat, Menu } from 'lucide-react';
+import { Bell, Settings, User, LogOut, Menu } from 'lucide-react';
 
 export default function Topbar({ onMenuClick }) {
   return (
@@ -12,7 +12,12 @@ export default function Topbar({ onMenuClick }) {
         >
           <Menu className="w-6 h-6" />
         </button>
-        <Wheat className="w-6 h-6 sm:w-7 sm:h-7 md:w-8 md:h-8 text-white/90 shrink-0 hidden sm:block" aria-hidden />
+        <img
+          src="/images/logo.png"
+          alt=""
+          className="w-6 h-6 sm:w-7 sm:h-7 md:w-8 md:h-8 object-contain shrink-0 block"
+          aria-hidden
+        />
         <h1 className="text-app-title sm:text-sm-app-title md:text-md-app-title lg:text-lg-app-title font-semibold tracking-tight text-white truncate">
           NPB Loaf Line Production Planner
         </h1>

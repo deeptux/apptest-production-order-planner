@@ -39,9 +39,6 @@ export function NavContent({ currentPage, onNavigate, onClose, collapsed = false
           );
         })}
       </nav>
-      <div className="p-4 flex justify-center opacity-40 flex-shrink-0">
-        <Wheat className="w-8 h-8 sm:w-10 sm:h-10" aria-hidden />
-      </div>
     </>
   );
 }

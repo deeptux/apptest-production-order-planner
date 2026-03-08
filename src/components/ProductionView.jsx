@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { Plus, Pencil, Trash2, Check, X, Search } from 'lucide-react';
 import * as Tabs from '@radix-ui/react-tabs';
 import * as Dialog from '@radix-ui/react-dialog';
@@ -19,6 +20,7 @@ import {
   getMixingProfiles,
   getProfileTotalMinutes,
   addMixingProfile,
+  deleteMixingProfile,
   getEquipmentForProfile,
   getEquipmentMinutesForProfile,
   setEquipmentMinutesForProfile,
@@ -30,7 +32,7 @@ import {
   deleteProcessTimeFromProfile,
 } from '../store/productionLinesStore';
 import { getRecipes } from '../store/recipeStore';
-import { getMachines, addMachine, updateMachine, deleteMachine, getMachinesForLineAndProcess } from '../store/machinesStore';
+import { getMachines, addMachine, updateMachine, deleteMachine, getMachinesForLineAndProcess, resetMachinesToDefaults } from '../store/machinesStore';
 
 function MachinesTabContent({ activeTab }) {
   const [machines, setMachinesState] = useState(() => getMachines());
@@ -77,6 +79,11 @@ function MachinesTabContent({ activeTab }) {
     deleteMachine(id);
     refresh();
   }, [refresh]);
+  const handleResetToDefaults = useCallback(() => {
+    if (!window.confirm('Replace the current machine list with the app’s default list? Any machines added only in the app (not in code) will be removed.')) return;
+    resetMachinesToDefaults();
+    refresh();
+  }, [refresh]);
   const lineName = (id) => (id ? (getLineById(id)?.name ?? id) : '—');
   const processName = (lineId, processId) => {
     if (!lineId || !processId) return '—';
@@ -106,6 +113,13 @@ function MachinesTabContent({ activeTab }) {
               aria-label="Search machines"
             />
           </div>
+          <button
+            type="button"
+            onClick={handleResetToDefaults}
+            className="px-3 py-1.5 border border-gray-300 rounded-lg text-xs sm:text-sm text-gray-700 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-primary/30"
+          >
+            Reset to defaults
+          </button>
         </div>
         <div className="overflow-auto min-h-0 border border-gray-200 rounded-lg" style={{ maxHeight: 'min(60vh, 480px)' }}>
           <table className="w-full border-collapse text-xs sm:text-sm md:text-base 2xl:text-lg min-w-[320px]">
@@ -256,6 +270,8 @@ export default function ProductionView() {
   const [equipmentDropdownOpen, setEquipmentDropdownOpen] = useState(null); // null | { type: 'add', key } | { type: 'edit', lineId, sectionId, itemId }
   const [equipmentDropdownSearch, setEquipmentDropdownSearch] = useState('');
   const equipmentDropdownRef = useRef(null);
+  const equipmentDropdownPortalRef = useRef(null);
+  const [equipmentDropdownBounds, setEquipmentDropdownBounds] = useState(null);
   const [machinesVersion, setMachinesVersion] = useState(0); // bump to re-read machines after assign/unassign
   const [newLineName, setNewLineName] = useState('');
   const [lineEditId, setLineEditId] = useState(null);
@@ -306,11 +322,34 @@ export default function ProductionView() {
     });
   }, [lines]);
   useEffect(() => {
+    if (!equipmentDropdownOpen) {
+      setEquipmentDropdownBounds(null);
+      return;
+    }
+    const updateBounds = () => {
+      if (equipmentDropdownRef.current) {
+        const r = equipmentDropdownRef.current.getBoundingClientRect();
+        setEquipmentDropdownBounds({ left: r.left, top: r.bottom + 4, width: Math.max(200, r.width) });
+      }
+    };
+    const raf = requestAnimationFrame(updateBounds);
+    const onScrollOrResize = () => updateBounds();
+    window.addEventListener('scroll', onScrollOrResize, true);
+    window.addEventListener('resize', onScrollOrResize);
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener('scroll', onScrollOrResize, true);
+      window.removeEventListener('resize', onScrollOrResize);
+    };
+  }, [equipmentDropdownOpen]);
+
+  useEffect(() => {
     if (!equipmentDropdownOpen) return;
     const onMouseDown = (e) => {
-      if (equipmentDropdownRef.current && !equipmentDropdownRef.current.contains(e.target)) {
-        setEquipmentDropdownOpen(null);
-      }
+      const trigger = equipmentDropdownRef.current;
+      const panel = equipmentDropdownPortalRef.current;
+      if (trigger?.contains(e.target) || panel?.contains(e.target)) return;
+      setEquipmentDropdownOpen(null);
     };
     document.addEventListener('mousedown', onMouseDown);
     return () => document.removeEventListener('mousedown', onMouseDown);
@@ -462,6 +501,59 @@ export default function ProductionView() {
 
   return (
     <div className="p-4 sm:p-6 flex flex-col gap-4 sm:gap-6 max-w-[1600px] xl:max-w-[1920px] 2xl:max-w-[2200px] mx-auto w-full min-w-0">
+      {equipmentDropdownBounds && equipmentDropdownOpen && createPortal(
+        <div
+          ref={equipmentDropdownPortalRef}
+          className="bg-white border border-gray-300 rounded-lg shadow-lg py-2 flex flex-col min-w-[200px] max-h-[min(70vh,400px)]"
+          style={{
+            position: 'fixed',
+            left: equipmentDropdownBounds.left,
+            top: equipmentDropdownBounds.top,
+            width: equipmentDropdownBounds.width,
+            zIndex: 9999,
+          }}
+        >
+          <div className="px-2 pb-2 shrink-0">
+            <div className="relative">
+              <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" aria-hidden />
+              <input
+                type="text"
+                value={equipmentDropdownSearch}
+                onChange={(e) => setEquipmentDropdownSearch(e.target.value)}
+                placeholder="Search..."
+                className="w-full pl-7 pr-2 py-1.5 border border-gray-200 rounded text-xs sm:text-sm focus:outline-none focus:ring-1 focus:ring-primary/40"
+                autoFocus
+                aria-label="Filter machines"
+              />
+            </div>
+          </div>
+          <ul
+            className="text-xs sm:text-sm overflow-x-hidden overscroll-contain flex-1 min-h-0"
+            style={{ maxHeight: '208px', overflowY: 'auto' }}
+          >
+            {machinesFilteredForDropdown.map((machine) => (
+              <li
+                key={machine.id}
+                onClick={() => {
+                  if (equipmentDropdownOpen.type === 'edit') {
+                    setEquipmentDraft((p) => (p ? { ...p, name: machine.name, machineId: machine.id } : { name: machine.name, machineId: machine.id }));
+                  } else {
+                    setSelectedMachineId((p) => ({ ...p, [equipmentDropdownOpen.key]: machine.id }));
+                  }
+                  setEquipmentDropdownOpen(null);
+                }}
+                className="px-3 py-1.5 hover:bg-gray-100 cursor-pointer"
+              >
+                {machine.name}
+              </li>
+            ))}
+            {machinesFilteredForDropdown.length === 0 && (
+              <li className="px-3 py-2 text-gray-500">No matches</li>
+            )}
+          </ul>
+        </div>,
+        document.body
+      )}
       <Tabs.Root value={activeMainTab} onValueChange={setActiveMainTab} className="w-full min-w-0">
         <Tabs.List className="flex gap-1 border-b border-gray-200 bg-surface-card-warm rounded-t-card overflow-x-auto pt-2 px-2 min-w-0 mb-4">
           <Tabs.Trigger
@@ -998,7 +1090,9 @@ export default function ProductionView() {
                                 </div>
                                 {selectedLineId === line.id && (
                                   <div className="flex flex-wrap gap-2 items-center">
-                                    <label className="text-xs sm:text-sm text-gray-600">Mixing profile:</label>
+                                    <label className="text-xs sm:text-sm text-gray-600">
+                                      {proc.name} profile:
+                                    </label>
                                     <select
                                       value={selectedProfileId ?? ''}
                                       onChange={(e) => setSelectedMixingProfileId((p) => ({ ...p, [key]: e.target.value || null }))}
@@ -1011,6 +1105,21 @@ export default function ProductionView() {
                                         </option>
                                       ))}
                                     </select>
+                                    {selectedProfileId && (
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          if (!window.confirm(`Delete the selected profile (${profileTotalMinutes} min)? This cannot be undone.`)) return;
+                                          deleteMixingProfile(line.id, proc.id, selectedProfileId);
+                                          setLinesState(getLines());
+                                          const remaining = getMixingProfiles(line.id, proc.id);
+                                          setSelectedMixingProfileId((p) => ({ ...p, [key]: remaining[0]?.id ?? null }));
+                                        }}
+                                        className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-red-300 bg-red-50 text-red-700 text-xs sm:text-sm font-medium shrink-0 hover:bg-red-100"
+                                      >
+                                        <Trash2 className="w-4 h-4" /> Delete Process Profile
+                                      </button>
+                                    )}
                                     <button
                                       type="button"
                                       onClick={() => {
@@ -1024,9 +1133,6 @@ export default function ProductionView() {
                                     >
                                       <Plus className="w-4 h-4" /> Add mixing profile
                                     </button>
-                                    {selectedProfileId && (
-                                      <span className="text-xs sm:text-sm text-gray-500">Editing — {profileTotalMinutes} min</span>
-                                    )}
                                   </div>
                                 )}
                               </div>
@@ -1034,25 +1140,80 @@ export default function ProductionView() {
                               <section className="border border-gray-200 rounded-xl bg-gray-50/50 p-3 sm:p-4 mt-2 flex flex-col min-w-0" aria-label={`Mixing profile ${profileTotalMinutes} min`}>
                                 <h4 className="text-xs sm:text-sm md:text-base font-semibold text-gray-800 mb-3 shrink-0">Mixing profile — {profileTotalMinutes} min total</h4>
                               <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6 min-w-0">
-                                <section className="border border-gray-200 rounded-lg bg-surface-card overflow-hidden min-w-0 text-xs sm:text-sm md:text-base lg:text-lg xl:text-xl 2xl:text-2xl flex flex-col min-h-0">
+                                <section className="border border-gray-200 rounded-lg bg-surface-card overflow-visible min-w-0 text-xs sm:text-sm md:text-base lg:text-lg xl:text-xl 2xl:text-2xl flex flex-col min-h-0">
                                   <div className="p-2 sm:p-3 border-b border-gray-200 bg-surface-card-warm shrink-0">
                                     <h4 className="font-semibold text-gray-800 text-inherit">Machines / equipment</h4>
                                     <p className="text-muted mt-0.5 text-[0.65rem] sm:text-xs md:text-xs">Add machines and set duration (minutes) for each. Click Edit to change.</p>
                                   </div>
                                   <div className="p-3 sm:p-4 text-inherit">
-                              <ul className="list-none space-y-2">
-                                {equipment.length === 0 ? (
-                                  <li className="text-xs sm:text-sm text-muted py-2">No machines added yet. Select one below and click Add.</li>
-                                ) : (
-                                  equipment.map((item) => {
+                              <div className="overflow-x-auto min-w-0">
+                              <table className="w-full border-collapse text-inherit">
+                                <thead>
+                                  <tr className="border-b border-gray-200">
+                                    <th className="text-left py-2 px-2 font-semibold text-gray-800">Machine Name</th>
+                                    <th className="text-left py-2 px-2 font-semibold text-gray-800 whitespace-nowrap">Duration (mins)</th>
+                                    <th className="text-left py-2 px-2 w-24 sm:w-28 font-semibold text-gray-800">Actions</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {selectedLineId === line.id && selectedProfileId && (
+                                    <tr className="border-b border-gray-200 bg-gray-50/80">
+                                      <td className="py-2 px-2">
+                                        <div
+                                          ref={equipmentDropdownOpen?.type === 'add' && equipmentDropdownOpen.key === key ? equipmentDropdownRef : null}
+                                          className="relative min-w-[200px] max-w-[280px]"
+                                        >
+                                          <button
+                                            type="button"
+                                            onClick={() => {
+                                              setEquipmentDropdownOpen({ type: 'add', key });
+                                              setEquipmentDropdownSearch('');
+                                            }}
+                                            className="w-full text-left border border-gray-300 rounded-lg px-2 py-1.5 text-xs sm:text-sm bg-white"
+                                          >
+                                            {selectedId ? machinesList.find((x) => x.id === selectedId)?.name ?? '—' : '— Select —'}
+                                          </button>
+                                          {equipmentDropdownOpen?.type === 'add' && equipmentDropdownOpen.key === key && null}
+                                        </div>
+                                      </td>
+                                      <td className="py-2 px-2">
+                                        <input
+                                          type="number"
+                                          min={0}
+                                          value={newEquipmentMinutes[key] ?? ''}
+                                          onChange={(e) => setNewEquipmentMinutes((p) => ({ ...p, [key]: e.target.value }))}
+                                          placeholder="mins."
+                                          className="border border-gray-300 rounded-lg px-2 py-1.5 w-16 sm:w-20 text-xs sm:text-sm"
+                                          title="Duration (minutes)"
+                                        />
+                                      </td>
+                                      <td className="py-2 px-2">
+                                        <button
+                                          type="button"
+                                          onClick={() => handleEquipmentAdd(line.id, proc.id, selectedProfileId, newEquipmentMinutes[key])}
+                                          disabled={!selectedId}
+                                          className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-primary text-white text-xs sm:text-sm font-medium shrink-0 disabled:opacity-50"
+                                        >
+                                          <Plus className="w-4 h-4 inline" /> Add
+                                        </button>
+                                      </td>
+                                    </tr>
+                                  )}
+                                  {equipment.length === 0 ? (
+                                    <tr>
+                                      <td colSpan={3} className="py-3 px-2 text-xs sm:text-sm text-muted">No machines added yet. Use the Add row above.</td>
+                                    </tr>
+                                  ) : (
+                                    equipment.map((item) => {
                                     const minutesVal = getEquipmentMinutesForProfile(line.id, proc.id, selectedProfileId, item.id);
                                     return (
-                                      <li key={item.id} className="flex flex-wrap items-center gap-2 py-1.5 border-b border-gray-100 last:border-0">
+                                      <tr key={item.id} className="border-b border-gray-100">
+                                        <td className="py-2 px-2">
                                         {equipmentEdit?.lineId === line.id && equipmentEdit?.sectionId === proc.id && equipmentEdit?.itemId === item.id ? (
                                           <>
                                             <div
                                               ref={equipmentDropdownOpen?.type === 'edit' && equipmentDropdownOpen.itemId === item.id ? equipmentDropdownRef : null}
-                                              className="relative flex-1 min-w-0 max-w-xs"
+                                              className="relative min-w-0 max-w-xs"
                                             >
                                               <button
                                                 type="button"
@@ -1060,46 +1221,20 @@ export default function ProductionView() {
                                                   setEquipmentDropdownOpen({ type: 'edit', lineId: line.id, sectionId: proc.id, itemId: item.id });
                                                   setEquipmentDropdownSearch('');
                                                 }}
-                                                className="w-full text-left border border-gray-300 rounded-lg px-2 py-1 flex-1 min-w-0 text-xs sm:text-sm bg-white"
+                                                className="w-full text-left border border-gray-300 rounded-lg px-2 py-1 text-xs sm:text-sm bg-white"
                                               >
                                                 {equipmentDraft?.machineId ? machinesList.find((x) => x.id === equipmentDraft.machineId)?.name ?? '—' : '— Select machine / equipment —'}
                                               </button>
-                                              {equipmentDropdownOpen?.type === 'edit' && equipmentDropdownOpen.lineId === line.id && equipmentDropdownOpen.sectionId === proc.id && equipmentDropdownOpen.itemId === item.id && (
-                                                <div className="absolute left-0 right-0 top-full mt-1 z-50 bg-white border border-gray-300 rounded-lg shadow-lg py-2 min-w-[200px]">
-                                                  <div className="px-2 pb-2">
-                                                    <div className="relative">
-                                                      <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" aria-hidden />
-                                                      <input
-                                                        type="text"
-                                                        value={equipmentDropdownSearch}
-                                                        onChange={(e) => setEquipmentDropdownSearch(e.target.value)}
-                                                        placeholder="Search..."
-                                                        className="w-full pl-7 pr-2 py-1.5 border border-gray-200 rounded text-xs sm:text-sm focus:outline-none focus:ring-1 focus:ring-primary/40"
-                                                        autoFocus
-                                                        aria-label="Filter machines"
-                                                      />
-                                                    </div>
-                                                  </div>
-                                                  <ul className="max-h-48 overflow-auto text-xs sm:text-sm">
-                                                    {machinesFilteredForDropdown.map((machine) => (
-                                                      <li
-                                                        key={machine.id}
-                                                        onClick={() => {
-                                                          setEquipmentDraft((p) => (p ? { ...p, name: machine.name, machineId: machine.id } : { name: machine.name, machineId: machine.id }));
-                                                          setEquipmentDropdownOpen(null);
-                                                        }}
-                                                        className="px-3 py-1.5 hover:bg-gray-100 cursor-pointer"
-                                                      >
-                                                        {machine.name}
-                                                      </li>
-                                                    ))}
-                                                    {machinesFilteredForDropdown.length === 0 && (
-                                                      <li className="px-3 py-2 text-gray-500">No matches</li>
-                                                    )}
-                                                  </ul>
-                                                </div>
-                                              )}
+                                              {equipmentDropdownOpen?.type === 'edit' && equipmentDropdownOpen.lineId === line.id && equipmentDropdownOpen.sectionId === proc.id && equipmentDropdownOpen.itemId === item.id && null}
                                             </div>
+                                          </>
+                                        ) : (
+                                          <span className="text-gray-800 font-medium text-xs sm:text-sm">{item.name}</span>
+                                        )}
+                                        </td>
+                                        <td className="py-2 px-2">
+                                        {equipmentEdit?.lineId === line.id && equipmentEdit?.sectionId === proc.id && equipmentEdit?.itemId === item.id ? (
+                                          <>
                                             <input
                                               type="number"
                                               min={0}
@@ -1109,97 +1244,30 @@ export default function ProductionView() {
                                               className="border border-gray-300 rounded-lg px-2 py-1 w-16 sm:w-20 text-xs sm:text-sm"
                                               title="Duration (minutes)"
                                             />
-                                            <button type="button" onClick={handleEquipmentSave} className="px-2 py-1 rounded-lg bg-primary text-white text-xs shrink-0">Save</button>
-                                            <button type="button" onClick={() => { setEquipmentEdit(null); setEquipmentDraft(null); setEquipmentDropdownOpen(null); }} className="px-2 py-1 rounded-lg border border-gray-300 text-xs shrink-0">Cancel</button>
+                                            <button type="button" onClick={handleEquipmentSave} className="ml-1 px-2 py-1 rounded-lg bg-primary text-white text-xs shrink-0">Save</button>
+                                            <button type="button" onClick={() => { setEquipmentEdit(null); setEquipmentDraft(null); setEquipmentDropdownOpen(null); }} className="ml-1 px-2 py-1 rounded-lg border border-gray-300 text-xs shrink-0">Cancel</button>
                                           </>
                                         ) : (
                                           <>
-                                            <span className="text-gray-800 font-medium min-w-[120px] text-xs sm:text-sm">{item.name}</span>
                                             <span className="text-muted text-xs sm:text-sm">{minutesVal != null && minutesVal !== '' ? `${minutesVal} min` : '—'}</span>
-                                            {selectedLineId === line.id && (
-                                              <>
-                                                <button type="button" onClick={() => { setEquipmentEdit({ lineId: line.id, sectionId: proc.id, itemId: item.id }); setEquipmentDraft({ name: item.name, machineId: item.id, minutes: minutesVal ?? '' }); }} className="p-1 rounded-lg border border-gray-300 hover:bg-gray-100" aria-label="Edit"><Pencil className="w-4 h-4" /></button>
-                                                <button type="button" onClick={() => handleEquipmentDelete(line.id, proc.id, selectedProfileId, item.id)} className="p-1 rounded-lg border border-gray-300 hover:bg-red-50 text-red-600" aria-label="Delete"><Trash2 className="w-4 h-4" /></button>
-                                              </>
-                                            )}
                                           </>
                                         )}
-                                      </li>
+                                        </td>
+                                        <td className="py-2 px-2">
+                                        {selectedLineId === line.id && !(equipmentEdit?.lineId === line.id && equipmentEdit?.sectionId === proc.id && equipmentEdit?.itemId === item.id) && (
+                                          <>
+                                            <button type="button" onClick={() => { setEquipmentEdit({ lineId: line.id, sectionId: proc.id, itemId: item.id }); setEquipmentDraft({ name: item.name, machineId: item.id, minutes: minutesVal ?? '' }); }} className="p-1 rounded-lg border border-gray-300 hover:bg-gray-100" aria-label="Edit"><Pencil className="w-4 h-4 inline" /></button>
+                                            <button type="button" onClick={() => handleEquipmentDelete(line.id, proc.id, selectedProfileId, item.id)} className="ml-1 p-1 rounded-lg border border-gray-300 hover:bg-red-50 text-red-600" aria-label="Delete"><Trash2 className="w-4 h-4 inline" /></button>
+                                          </>
+                                        )}
+                                        </td>
+                                      </tr>
                                     );
                                   })
                                 )}
-                              </ul>
-                              {selectedLineId === line.id && selectedProfileId && (
-                                <div className="flex flex-wrap gap-2 mt-3 items-center">
-                                  <div
-                                    ref={equipmentDropdownOpen?.type === 'add' && equipmentDropdownOpen.key === key ? equipmentDropdownRef : null}
-                                    className="relative min-w-[200px] sm:min-w-[240px] flex-1 max-w-[280px]"
-                                  >
-                                    <button
-                                      type="button"
-                                      onClick={() => {
-                                        setEquipmentDropdownOpen({ type: 'add', key });
-                                        setEquipmentDropdownSearch('');
-                                      }}
-                                      className="w-full text-left border border-gray-300 rounded-lg px-2 py-1.5 flex-1 min-w-0 text-xs sm:text-sm bg-white"
-                                    >
-                                      {selectedId ? machinesList.find((x) => x.id === selectedId)?.name ?? '—' : '— Select machine / equipment —'}
-                                    </button>
-                                    {equipmentDropdownOpen?.type === 'add' && equipmentDropdownOpen.key === key && (
-                                      <div className="absolute left-0 right-0 top-full mt-1 z-50 bg-white border border-gray-300 rounded-lg shadow-lg py-2 min-w-[200px]">
-                                        <div className="px-2 pb-2">
-                                          <div className="relative">
-                                            <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" aria-hidden />
-                                            <input
-                                              type="text"
-                                              value={equipmentDropdownSearch}
-                                              onChange={(e) => setEquipmentDropdownSearch(e.target.value)}
-                                              placeholder="Search..."
-                                              className="w-full pl-7 pr-2 py-1.5 border border-gray-200 rounded text-xs sm:text-sm focus:outline-none focus:ring-1 focus:ring-primary/40"
-                                              autoFocus
-                                              aria-label="Filter machines"
-                                            />
-                                          </div>
-                                        </div>
-                                        <ul className="max-h-48 overflow-auto text-xs sm:text-sm">
-                                          {machinesFilteredForDropdown.map((machine) => (
-                                            <li
-                                              key={machine.id}
-                                              onClick={() => {
-                                                setSelectedMachineId((p) => ({ ...p, [key]: machine.id }));
-                                                setEquipmentDropdownOpen(null);
-                                              }}
-                                              className="px-3 py-1.5 hover:bg-gray-100 cursor-pointer"
-                                            >
-                                              {machine.name}
-                                            </li>
-                                          ))}
-                                          {machinesFilteredForDropdown.length === 0 && (
-                                            <li className="px-3 py-2 text-gray-500">No matches</li>
-                                          )}
-                                        </ul>
-                                      </div>
-                                    )}
-                                  </div>
-                                  <input
-                                    type="number"
-                                    min={0}
-                                    value={newEquipmentMinutes[key] ?? ''}
-                                    onChange={(e) => setNewEquipmentMinutes((p) => ({ ...p, [key]: e.target.value }))}
-                                    placeholder="mins."
-                                    className="border border-gray-300 rounded-lg px-2 py-1.5 w-16 sm:w-20 text-xs sm:text-sm"
-                                    title="Duration (minutes)"
-                                  />
-                                  <button
-                                    type="button"
-                                    onClick={() => handleEquipmentAdd(line.id, proc.id, selectedProfileId, newEquipmentMinutes[key])}
-                                    disabled={!selectedId}
-                                    className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-primary text-white text-xs sm:text-sm font-medium shrink-0 disabled:opacity-50"
-                                  >
-                                    <Plus className="w-4 h-4 inline" /> Add
-                                  </button>
-                                </div>
-                              )}
+                              </tbody>
+                              </table>
+                              </div>
                                   </div>
                                 </section>
 
@@ -1217,18 +1285,77 @@ export default function ProductionView() {
                                     {processTimeDuplicateNameError && (
                                       <p className="text-xs text-red-600 mb-2">A process time with this name already exists in this profile. Use a different name (e.g. Gap 2).</p>
                                     )}
-                                    <ul className="list-none space-y-2 mb-3">
-                                      {processTimes.map((pt) => (
-                                        <li key={pt.id} className="flex flex-wrap items-center gap-2 py-1.5 border-b border-gray-100 last:border-0">
+                                    <div className="overflow-x-auto min-w-0">
+                                    <table className="w-full border-collapse text-inherit">
+                                      <thead>
+                                        <tr className="border-b border-gray-200">
+                                          <th className="text-left py-2 px-2 font-semibold text-gray-800">Process time name</th>
+                                          <th className="text-left py-2 px-2 font-semibold text-gray-800 whitespace-nowrap">Duration (mins)</th>
+                                          <th className="text-left py-2 px-2 w-24 sm:w-28 font-semibold text-gray-800">Actions</th>
+                                        </tr>
+                                      </thead>
+                                      <tbody>
+                                    {selectedLineId === line.id && selectedProfileId && (
+                                      <tr className="border-b border-gray-200 bg-gray-50/80">
+                                        <td className="py-2 px-2">
+                                          <input
+                                            type="text"
+                                            value={processTimeEdit?.processTimeId ? '' : newProcessTimeName}
+                                            onChange={(e) => { setNewProcessTimeName(e.target.value); setProcessTimeDuplicateNameError(false); }}
+                                            placeholder="e.g. Gap"
+                                            className="border border-gray-300 rounded-lg px-2 py-1.5 w-full min-w-0 text-xs sm:text-sm md:text-base lg:text-base 2xl:text-lg"
+                                            style={{ minWidth: 'clamp(4rem, 18vw, 14rem)', maxWidth: '100%' }}
+                                            disabled={!!processTimeEdit?.processTimeId}
+                                          />
+                                        </td>
+                                        <td className="py-2 px-2">
+                                          <input
+                                            type="number"
+                                            min={0}
+                                            value={processTimeEdit?.processTimeId ? '' : newProcessTimeMinutes}
+                                            onChange={(e) => setNewProcessTimeMinutes(e.target.value)}
+                                            placeholder="mins."
+                                            className="border border-gray-300 rounded-lg px-2 py-1.5 w-20 text-xs sm:text-sm"
+                                            disabled={!!processTimeEdit?.processTimeId}
+                                          />
+                                        </td>
+                                        <td className="py-2 px-2">
+                                          <button
+                                            type="button"
+                                            disabled={!newProcessTimeName.trim()}
+                                            onClick={() => {
+                                              setProcessTimeDuplicateNameError(false);
+                                              const res = addProcessTimeToProfile(line.id, proc.id, selectedProfileId, { name: newProcessTimeName.trim(), minutes: newProcessTimeMinutes === '' || Number.isNaN(Number(newProcessTimeMinutes)) ? 0 : Number(newProcessTimeMinutes) });
+                                              if (res?.duplicateName) { setProcessTimeDuplicateNameError(true); return; }
+                                              setLinesState(getLines());
+                                              setNewProcessTimeName('');
+                                              setNewProcessTimeMinutes('');
+                                            }}
+                                            className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-primary text-white text-xs sm:text-sm font-medium shrink-0 disabled:opacity-50"
+                                          >
+                                            <Plus className="w-4 h-4 inline" /> Add
+                                          </button>
+                                        </td>
+                                      </tr>
+                                    )}
+                                    {processTimes.map((pt) => (
+                                      <tr key={pt.id} className="border-b border-gray-100">
+                                        <td className="py-2 px-2">
+                                          {isEditingPt && processTimeEdit?.processTimeId === pt.id && processTimeDraft ? (
+                                            <input
+                                              type="text"
+                                              value={processTimeDraft.name}
+                                              onChange={(e) => { setProcessTimeDraft((p) => (p ? { ...p, name: e.target.value } : { name: e.target.value, minutes: 0 })); setProcessTimeDuplicateNameError(false); }}
+                                              className="border border-gray-300 rounded-lg px-2 py-1 text-xs sm:text-sm min-w-[140px]"
+                                              placeholder="Name"
+                                            />
+                                          ) : (
+                                            <span className="text-gray-800 font-medium text-xs sm:text-sm">{pt.name}</span>
+                                          )}
+                                        </td>
+                                        <td className="py-2 px-2">
                                           {isEditingPt && processTimeEdit?.processTimeId === pt.id && processTimeDraft ? (
                                             <>
-                                              <input
-                                                type="text"
-                                                value={processTimeDraft.name}
-                                                onChange={(e) => { setProcessTimeDraft((p) => (p ? { ...p, name: e.target.value } : { name: e.target.value, minutes: 0 })); setProcessTimeDuplicateNameError(false); }}
-                                                className="border border-gray-300 rounded-lg px-2 py-1 text-xs sm:text-sm min-w-[140px]"
-                                                placeholder="Name"
-                                              />
                                               <input
                                                 type="number"
                                                 min={0}
@@ -1237,7 +1364,15 @@ export default function ProductionView() {
                                                 className="border border-gray-300 rounded-lg px-2 py-1 w-16 sm:w-20 text-xs sm:text-sm"
                                                 placeholder="Min"
                                               />
-                                              <span className="text-xs sm:text-sm text-muted">min</span>
+                                              <span className="text-xs sm:text-sm text-muted ml-1">min</span>
+                                            </>
+                                          ) : (
+                                            <span className="text-xs sm:text-sm text-muted">{pt.minutes} min</span>
+                                          )}
+                                        </td>
+                                        <td className="py-2 px-2">
+                                          {isEditingPt && processTimeEdit?.processTimeId === pt.id && processTimeDraft ? (
+                                            <>
                                               <button
                                                 type="button"
                                                 onClick={() => {
@@ -1252,65 +1387,34 @@ export default function ProductionView() {
                                               >
                                                 Save
                                               </button>
-                                              <button type="button" onClick={() => { setProcessTimeEdit(null); setProcessTimeDraft(null); setProcessTimeDuplicateNameError(false); }} className="px-2 py-1 rounded-lg border border-gray-300 text-xs shrink-0">Cancel</button>
+                                              <button type="button" onClick={() => { setProcessTimeEdit(null); setProcessTimeDraft(null); setProcessTimeDuplicateNameError(false); }} className="ml-1 px-2 py-1 rounded-lg border border-gray-300 text-xs shrink-0">Cancel</button>
                                             </>
                                           ) : (
-                                            <>
-                                              <span className="text-gray-800 text-xs sm:text-sm font-medium min-w-[120px]">{pt.name}</span>
-                                              <span className="text-xs sm:text-sm text-muted">{pt.minutes} min</span>
-                                              {selectedLineId === line.id && (
-                                                <>
-                                                  <button type="button" onClick={() => { setProcessTimeEdit({ lineId: line.id, processId: proc.id, processTimeId: pt.id }); setProcessTimeDraft({ name: pt.name, minutes: pt.minutes }); setProcessTimeDuplicateNameError(false); }} className="p-1 rounded-lg border border-gray-300 hover:bg-gray-100" aria-label="Edit"><Pencil className="w-4 h-4" /></button>
-                                                  <button type="button" onClick={() => { deleteProcessTimeFromProfile(line.id, proc.id, selectedProfileId, pt.id); setLinesState(getLines()); }} className="p-1 rounded-lg border border-gray-300 hover:bg-red-50 text-red-600" aria-label="Delete"><Trash2 className="w-4 h-4" /></button>
-                                                </>
-                                              )}
-                                            </>
+                                            selectedLineId === line.id && (
+                                              <>
+                                                <button type="button" onClick={() => { setProcessTimeEdit({ lineId: line.id, processId: proc.id, processTimeId: pt.id }); setProcessTimeDraft({ name: pt.name, minutes: pt.minutes }); setProcessTimeDuplicateNameError(false); }} className="p-1 rounded-lg border border-gray-300 hover:bg-gray-100" aria-label="Edit"><Pencil className="w-4 h-4" /></button>
+                                                <button type="button" onClick={() => { deleteProcessTimeFromProfile(line.id, proc.id, selectedProfileId, pt.id); setLinesState(getLines()); }} className="ml-1 p-1 rounded-lg border border-gray-300 hover:bg-red-50 text-red-600" aria-label="Delete"><Trash2 className="w-4 h-4" /></button>
+                                              </>
+                                            )
                                           )}
-                                        </li>
-                                      ))}
-                                    </ul>
-                                    {selectedLineId === line.id && selectedProfileId && (
-                                      <div className="flex flex-wrap gap-2 items-center">
-                                        <input
-                                          type="text"
-                                          value={processTimeEdit?.processTimeId ? '' : newProcessTimeName}
-                                          onChange={(e) => { setNewProcessTimeName(e.target.value); setProcessTimeDuplicateNameError(false); }}
-                                          placeholder="Process time name (e.g. Gap)"
-                                          className="border border-gray-300 rounded-lg px-2 py-1.5 text-xs sm:text-sm min-w-[200px] sm:min-w-[240px] max-w-full"
-                                          disabled={!!processTimeEdit?.processTimeId}
-                                        />
-                                        <input
-                                          type="number"
-                                          min={0}
-                                          value={processTimeEdit?.processTimeId ? '' : newProcessTimeMinutes}
-                                          onChange={(e) => setNewProcessTimeMinutes(e.target.value)}
-                                          placeholder="mins."
-                                          className="border border-gray-300 rounded-lg px-2 py-1.5 w-20 text-xs sm:text-sm"
-                                          disabled={!!processTimeEdit?.processTimeId}
-                                        />
-                                        <button
-                                          type="button"
-                                          disabled={!newProcessTimeName.trim()}
-                                          onClick={() => {
-                                            setProcessTimeDuplicateNameError(false);
-                                            const res = addProcessTimeToProfile(line.id, proc.id, selectedProfileId, { name: newProcessTimeName.trim(), minutes: newProcessTimeMinutes === '' || Number.isNaN(Number(newProcessTimeMinutes)) ? 0 : Number(newProcessTimeMinutes) });
-                                            if (res?.duplicateName) { setProcessTimeDuplicateNameError(true); return; }
-                                            setLinesState(getLines());
-                                            setNewProcessTimeName('');
-                                            setNewProcessTimeMinutes('');
-                                          }}
-                                          className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-primary text-white text-xs sm:text-sm font-medium shrink-0 disabled:opacity-50"
-                                        >
-                                          <Plus className="w-4 h-4 inline" /> Add
-                                        </button>
-                                      </div>
-                                    )}
+                                        </td>
+                                      </tr>
+                                    ))}
+                                      </tbody>
+                                    </table>
+                                    </div>
                                   </>
                                 );
                               })()}
                                   </div>
                                 </section>
                               </div>
+                              <section className="border border-gray-200 rounded-lg bg-surface-card mt-4 p-3 sm:p-4 min-w-0 text-xs sm:text-sm md:text-base">
+                                <h4 className="font-semibold text-gray-800 text-inherit">Complex Process times</h4>
+                                <p className="text-muted mt-1 text-[0.65rem] sm:text-xs md:text-sm">
+                                  Complex process times like Packaging derived from strokes, capacity per hour and batch quantity or Baking&apos;s Rack Loading per rack and quantity per rack would be included in actual development below this section.
+                                </p>
+                              </section>
                               </section>
                               ) : (
                                 <p className="text-xs sm:text-sm text-muted mt-4">Select or add a mixing profile above to edit machines and process times.</p>
