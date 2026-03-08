@@ -34,12 +34,39 @@ function toDateString(v) {
   return `${y}-${m}-${day}`;
 }
 
+/** Theoretical Output = SO-CO Excess + Exchange for LOSS + Excess + Samples (all in pieces). */
+export function computeTheoreticalOutput(row) {
+  const soCo = Number(row.soCoExcess) || 0;
+  const loss = Number(row.exchangeForLoss) || 0;
+  const excess = Number(row.excess) || 0;
+  const samples = Number(row.samples) || 0;
+  return soCo + loss + excess + samples;
+}
+
 function normalizeRow(r) {
   const lineId = r.productionLineId || getLines()[0]?.id || 'line-loaf';
+  const soQty = Number(r.soQty) || 0;
+  const soCoExcess = r.soCoExcess !== undefined ? Number(r.soCoExcess) : soQty;
+  const exchangeForLoss = Number(r.exchangeForLoss) || 0;
+  const excess = Number(r.excess) || 0;
+  const samples = r.samples !== undefined ? Number(r.samples) : 2;
+  const carryOverExcess = Number(r.carryOverExcess) || 0;
+  const theorExcess = Number(r.theorExcess) || 0;
+  const theorOutput = r.theorOutputOverride !== undefined && r.theorOutputOverride !== ''
+    ? Number(r.theorOutputOverride)
+    : computeTheoreticalOutput({ soCoExcess, exchangeForLoss, excess, samples });
   return {
     ...r,
     productionLineId: lineId,
     date: r.date && typeof r.date === 'string' ? r.date.split('T')[0] : r.date,
+    soCoExcess,
+    exchangeForLoss,
+    excess,
+    samples,
+    carryOverExcess,
+    theorExcess,
+    theorOutputOverride: r.theorOutputOverride,
+    theorOutput,
   };
 }
 
@@ -151,7 +178,8 @@ export function setPlanDate(date) {
 }
 
 export function setRows(updater) {
-  const next = typeof updater === 'function' ? updater(state.rows) : updater;
+  const raw = typeof updater === 'function' ? updater(state.rows) : updater;
+  const next = raw.map((r) => normalizeRow(r));
   state = { ...state, rows: next };
   persistRows(next);
   pushToApi(state.planId, state.planDate, next);
@@ -186,7 +214,13 @@ export function addBatch(productionLineId) {
     date: rowDate,
     product: defaultProduct,
     soQty: 0,
-    theorOutput: 0,
+    soCoExcess: 0,
+    exchangeForLoss: 0,
+    excess: 0,
+    samples: 2,
+    carryOverExcess: 0,
+    theorExcess: 0,
+    theorOutput: 2,
     capacity: capacity ?? 0,
     procTime,
     startSponge,

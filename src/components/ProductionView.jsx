@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { Plus, Pencil, Trash2, Check, X, Search } from 'lucide-react';
 import * as Tabs from '@radix-ui/react-tabs';
+import * as Dialog from '@radix-ui/react-dialog';
 import {
   getLines,
   getLineById,
@@ -15,6 +16,18 @@ import {
   addProcess,
   updateProcess,
   deleteProcess,
+  getMixingProfiles,
+  getProfileTotalMinutes,
+  addMixingProfile,
+  getEquipmentForProfile,
+  getEquipmentMinutesForProfile,
+  setEquipmentMinutesForProfile,
+  addEquipmentItemToProfile,
+  deleteEquipmentItemFromProfile,
+  getProcessTimesForProfile,
+  addProcessTimeToProfile,
+  updateProcessTimeInProfile,
+  deleteProcessTimeFromProfile,
 } from '../store/productionLinesStore';
 import { getRecipes } from '../store/recipeStore';
 import { getMachines, addMachine, updateMachine, deleteMachine, getMachinesForLineAndProcess } from '../store/machinesStore';
@@ -232,7 +245,14 @@ export default function ProductionView() {
   const [newCapacityName, setNewCapacityName] = useState('');
   const [newCapacityProduct, setNewCapacityProduct] = useState('');
   const [newCapacityValue, setNewCapacityValue] = useState('');
+  const [newCapacityYield, setNewCapacityYield] = useState('');
+  const [newCapacityDoughKg, setNewCapacityDoughKg] = useState('');
+  const [newCapacityTotalDoughKg, setNewCapacityTotalDoughKg] = useState('');
+  const [newCapacityGrams, setNewCapacityGrams] = useState('');
+  const [capacityAddModalOpen, setCapacityAddModalOpen] = useState(false);
+  const [capacityDeleteConfirm, setCapacityDeleteConfirm] = useState(null); // { id, capacityName } | null
   const [selectedMachineId, setSelectedMachineId] = useState({}); // key: `${line.id}-${proc.id}` -> machineId for dropdown
+  const [newEquipmentMinutes, setNewEquipmentMinutes] = useState({}); // key: `${line.id}-${proc.id}` -> minutes number
   const [equipmentDropdownOpen, setEquipmentDropdownOpen] = useState(null); // null | { type: 'add', key } | { type: 'edit', lineId, sectionId, itemId }
   const [equipmentDropdownSearch, setEquipmentDropdownSearch] = useState('');
   const equipmentDropdownRef = useRef(null);
@@ -243,7 +263,14 @@ export default function ProductionView() {
   const [newProcessName, setNewProcessName] = useState('');
   const [processEditId, setProcessEditId] = useState(null);
   const [processEditName, setProcessEditName] = useState('');
+  const [newProcessTimeName, setNewProcessTimeName] = useState('');
+  const [newProcessTimeMinutes, setNewProcessTimeMinutes] = useState('');
+  const [processTimeEdit, setProcessTimeEdit] = useState(null); // { lineId, processId, processTimeId }
+  const [processTimeDraft, setProcessTimeDraft] = useState(null); // { name, minutes }
   const [activeMainTab, setActiveMainTab] = useState('production');
+  const [selectedMixingProfileId, setSelectedMixingProfileId] = useState({}); // key: `${line.id}-${proc.id}` -> profileId
+  const [processTabValueByLine, setProcessTabValueByLine] = useState({}); // key: line.id -> tab value (proc.id or 'add-process')
+  const [processTimeDuplicateNameError, setProcessTimeDuplicateNameError] = useState(false);
 
   const selectedLine = getLineById(selectedLineId) ?? lines[0];
   const processes = selectedLine ? getProcessesForLine(selectedLine.id) : [];
@@ -259,6 +286,25 @@ export default function ProductionView() {
   useEffect(() => {
     if (activeMainTab === 'production') refreshMachines();
   }, [activeMainTab, refreshMachines]);
+  // Default each process's mixing profile dropdown to the first profile when profiles exist and none is selected
+  useEffect(() => {
+    setSelectedMixingProfileId((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      const lineList = getLines();
+      lineList.forEach((line) => {
+        getProcessesForLine(line.id).forEach((proc) => {
+          const key = `${line.id}-${proc.id}`;
+          const profiles = getMixingProfiles(line.id, proc.id);
+          if (profiles.length > 0 && !next[key]) {
+            next[key] = profiles[0].id;
+            changed = true;
+          }
+        });
+      });
+      return changed ? next : prev;
+    });
+  }, [lines]);
   useEffect(() => {
     if (!equipmentDropdownOpen) return;
     const onMouseDown = (e) => {
@@ -278,6 +324,8 @@ export default function ProductionView() {
     setCapacityProfileState(getCapacityProfileForLine(id));
     setCapacityEditId(null);
     setCapacityDraft(null);
+    setCapacityAddModalOpen(false);
+    setCapacityDeleteConfirm(null);
     setLineEditId(null);
     setProcessEditId(null);
   }, []);
@@ -315,6 +363,10 @@ export default function ProductionView() {
       capacityName: capacityDraft.capacityName,
       productName: capacityDraft.productName,
       capacity: capacityDraft.capacity,
+      yield: capacityDraft.yield !== undefined && capacityDraft.yield !== '' ? Number(capacityDraft.yield) : null,
+      doughWeightKg: capacityDraft.doughWeightKg !== undefined && capacityDraft.doughWeightKg !== '' ? Number(capacityDraft.doughWeightKg) : null,
+      totalDoughWeightKg: capacityDraft.totalDoughWeightKg !== undefined && capacityDraft.totalDoughWeightKg !== '' ? Number(capacityDraft.totalDoughWeightKg) : null,
+      gramsPerUnit: capacityDraft.gramsPerUnit !== undefined && capacityDraft.gramsPerUnit !== '' ? Number(capacityDraft.gramsPerUnit) : null,
     });
     refreshCapacity();
     setCapacityEditId(null);
@@ -327,17 +379,27 @@ export default function ProductionView() {
       capacityName: newCapacityName.trim(),
       productName: newCapacityProduct.trim(),
       capacity: Number(newCapacityValue) || 0,
+      yield: newCapacityYield !== '' ? Number(newCapacityYield) : null,
+      doughWeightKg: newCapacityDoughKg !== '' ? Number(newCapacityDoughKg) : null,
+      totalDoughWeightKg: newCapacityTotalDoughKg !== '' ? Number(newCapacityTotalDoughKg) : null,
+      gramsPerUnit: newCapacityGrams !== '' ? Number(newCapacityGrams) : null,
     });
     refreshCapacity();
     setNewCapacityName('');
     setNewCapacityProduct('');
     setNewCapacityValue('');
-  }, [selectedLineId, newCapacityName, newCapacityProduct, newCapacityValue, refreshCapacity]);
+    setNewCapacityYield('');
+    setNewCapacityDoughKg('');
+    setNewCapacityTotalDoughKg('');
+    setNewCapacityGrams('');
+    setCapacityAddModalOpen(false);
+  }, [selectedLineId, newCapacityName, newCapacityProduct, newCapacityValue, newCapacityYield, newCapacityDoughKg, newCapacityTotalDoughKg, newCapacityGrams, refreshCapacity]);
 
   const handleCapacityDelete = useCallback((entryId) => {
     if (!selectedLineId) return;
     deleteCapacityEntryForLine(selectedLineId, entryId);
     refreshCapacity();
+    setCapacityDeleteConfirm(null);
   }, [selectedLineId, refreshCapacity]);
 
   const handleAddProcess = useCallback(() => {
@@ -365,28 +427,38 @@ export default function ProductionView() {
   const handleEquipmentSave = useCallback(() => {
     if (!equipmentEdit || !equipmentDraft) return;
     const { lineId, sectionId: processId, itemId } = equipmentEdit;
-    updateMachine(itemId, { productionLineId: null, processId: null });
+    const key = `${lineId}-${processId}`;
+    const profileId = selectedMixingProfileId[key];
+    if (!profileId) return;
+    deleteEquipmentItemFromProfile(lineId, processId, profileId, itemId);
     if (equipmentDraft.machineId) {
-      updateMachine(equipmentDraft.machineId, { productionLineId: lineId, processId });
+      addEquipmentItemToProfile(lineId, processId, profileId, { id: equipmentDraft.machineId, name: equipmentDraft.name ?? 'Unnamed' });
+      const mins = equipmentDraft.minutes !== undefined && equipmentDraft.minutes !== '' ? Number(equipmentDraft.minutes) : 0;
+      setEquipmentMinutesForProfile(lineId, processId, profileId, equipmentDraft.machineId, mins);
     }
     setEquipmentEdit(null);
     setEquipmentDraft(null);
-    refreshMachines();
-  }, [equipmentEdit, equipmentDraft, refreshMachines]);
+    setEquipmentDropdownOpen(null);
+    setLinesState(getLines());
+  }, [equipmentEdit, equipmentDraft, selectedMixingProfileId]);
 
-  const handleEquipmentAdd = useCallback((lineId, processId) => {
+  const handleEquipmentAdd = useCallback((lineId, processId, profileId, minutes) => {
     const key = `${lineId}-${processId}`;
     const machineId = selectedMachineId[key];
-    if (!machineId) return;
-    updateMachine(machineId, { productionLineId: lineId, processId });
+    if (!machineId || !profileId) return;
+    const machine = machinesList.find((m) => m.id === machineId);
+    addEquipmentItemToProfile(lineId, processId, profileId, { id: machineId, name: machine?.name ?? 'Unnamed' });
+    setEquipmentMinutesForProfile(lineId, processId, profileId, machineId, minutes !== undefined && minutes !== '' && !Number.isNaN(Number(minutes)) ? Number(minutes) : 0);
     setSelectedMachineId((p) => ({ ...p, [key]: '' }));
-    refreshMachines();
-  }, [selectedMachineId, refreshMachines]);
+    setNewEquipmentMinutes((p) => ({ ...p, [key]: '' }));
+    setLinesState(getLines());
+  }, [selectedMachineId]);
 
-  const handleEquipmentDelete = useCallback((lineId, processId, machineId) => {
-    updateMachine(machineId, { productionLineId: null, processId: null });
-    refreshMachines();
-  }, [refreshMachines]);
+  const handleEquipmentDelete = useCallback((lineId, processId, profileId, machineId) => {
+    if (!profileId) return;
+    deleteEquipmentItemFromProfile(lineId, processId, profileId, machineId);
+    setLinesState(getLines());
+  }, []);
 
   return (
     <div className="p-4 sm:p-6 flex flex-col gap-4 sm:gap-6 max-w-[1600px] xl:max-w-[1920px] 2xl:max-w-[2200px] mx-auto w-full min-w-0">
@@ -406,13 +478,13 @@ export default function ProductionView() {
           </Tabs.Trigger>
         </Tabs.List>
 
-        <Tabs.Content value="production" className="mt-0 rounded-b-card border border-gray-200 border-t-0 min-w-0">
-      <p className="text-xs sm:text-sm 2xl:text-base text-muted m-3 ml-5">
+        <Tabs.Content value="production" className="mt-0 rounded-b-card border border-gray-200 border-t-0 min-w-0 flex flex-col min-h-0">
+      <p className="text-xs sm:text-sm 2xl:text-base text-muted m-3 ml-5 shrink-0">
         Capacity profile and machines/equipment per production line. Each line has its own capacity entries and process structure.
       </p>
 
       {/* Add production line */}
-      <div className="flex flex-wrap gap-2 items-center m-5">
+      <div className="flex flex-wrap gap-2 items-center m-5 shrink-0">
         <input
           type="text"
           value={newLineName}
@@ -426,10 +498,11 @@ export default function ProductionView() {
         </button>
       </div>
 
+      <div className="flex flex-col flex-1 min-h-0">
       {lines.length === 0 ? (
         <p className="text-xs sm:text-sm 2xl:text-base text-muted">Add a production line above.</p>
       ) : (
-        <Tabs.Root value={selectedLineId} onValueChange={selectLine} className="w-full min-w-0">
+        <Tabs.Root value={selectedLineId} onValueChange={selectLine} className="w-full min-w-0 flex flex-col min-h-0 flex-1">
           <Tabs.List className="flex gap-1 border-b border-gray-200 bg-surface-card-warm rounded-t-card overflow-x-auto pt-2 px-2 min-w-0">
             {lines.map((line) => (
               <Tabs.Trigger
@@ -442,7 +515,7 @@ export default function ProductionView() {
             ))}
           </Tabs.List>
           {lines.map((line) => (
-            <Tabs.Content key={line.id} value={line.id} className="mt-0 rounded-b-card border border-gray-200 border-t-0 bg-surface-card min-w-0">
+            <Tabs.Content key={line.id} value={line.id} className="mt-0 rounded-b-card border border-gray-200 border-t-0 bg-surface-card min-w-0 flex flex-col flex-1 min-h-0">
               {selectedLineId === line.id && selectedLine && (
                 <>
                   {/* Line toolbar: edit name / delete */}
@@ -470,110 +543,342 @@ export default function ProductionView() {
 
                   {/* Capacity profile */}
                   <div className="border-b border-gray-100">
-                    <h3 className="p-2 sm:p-3 border-b border-gray-200 bg-surface-card-warm text-xs sm:text-sm md:text-base 2xl:text-lg font-semibold text-gray-800">
+                    <h3 className="p-2 sm:p-3 border-b border-gray-200 bg-surface-card-warm text-xs sm:text-sm md:text-base font-semibold text-gray-800">
                       Capacity profile ({line.name})
                     </h3>
                     <div className="p-3 sm:p-4 overflow-x-auto min-w-0">
-                      <table className="w-full border-collapse text-xs sm:text-sm md:text-base 2xl:text-lg min-w-[320px]">
-                        <thead>
-                          <tr className="border-b border-gray-200">
-                            <th className="text-left py-2 sm:py-3 px-3 sm:px-4 font-semibold text-gray-700 whitespace-nowrap">Capacity Name</th>
-                            <th className="text-left py-2 sm:py-3 px-3 sm:px-4 font-semibold text-gray-700 whitespace-nowrap">Product</th>
-                            <th className="text-left py-2 sm:py-3 px-3 sm:px-4 font-semibold text-gray-700 whitespace-nowrap">Capacity</th>
-                            <th className="text-left py-2 sm:py-3 px-3 sm:px-4 w-20 sm:w-24 whitespace-nowrap">Actions</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {(selectedLineId === line.id ? capacityProfile : getCapacityProfileForLine(line.id)).map((entry) => {
-                            const isEditing = selectedLineId === line.id && capacityEditId === entry.id;
-                            const e = isEditing && capacityDraft ? capacityDraft : entry;
-                            return (
-                              <tr key={entry.id} className="border-b border-gray-100">
-                                <td className="py-2 sm:py-2.5 px-3 sm:px-4">
-                                  <input
-                                    type="text"
-                                    value={e.capacityName}
-                                    onChange={(ev) => setCapacityDraft((p) => p ? { ...p, capacityName: ev.target.value } : { ...entry, capacityName: ev.target.value })}
-                                    disabled={!isEditing}
-                                    className="border border-gray-300 rounded-lg px-2 py-1 w-full max-w-[120px] sm:max-w-[140px] text-inherit disabled:bg-gray-50 disabled:cursor-not-allowed"
-                                  />
-                                </td>
-                                <td className="py-2 sm:py-2.5 px-3 sm:px-4">
-                                  {isEditing ? (
-                                    <select
-                                      value={e.productName}
-                                      onChange={(ev) => setCapacityDraft((p) => p ? { ...p, productName: ev.target.value } : { ...entry, productName: ev.target.value })}
-                                      className="border border-gray-300 rounded-lg px-2 py-1 max-w-[140px] sm:max-w-[180px] text-inherit"
-                                    >
-                                      <option value="">— Select product —</option>
-                                      {recipes.map((r) => (
-                                        <option key={r.id} value={r.name}>{r.name}</option>
-                                      ))}
-                                    </select>
-                                  ) : (
-                                    <span className="text-gray-800">{e.productName || '—'}</span>
-                                  )}
-                                </td>
-                                <td className="py-2 sm:py-2.5 px-3 sm:px-4">
+                      <div
+                        className="capacity-profile-table-fluid"
+                        style={{ fontSize: 'clamp(0.5rem, 0.5rem + (100vw - 20rem) * 0.0046, 1.125rem)' }}
+                      >
+                        <table className="w-full border-collapse min-w-[320px]">
+                          <thead>
+                            <tr className="border-b border-gray-200">
+                              <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 whitespace-nowrap">Capacity Name</th>
+                              <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold w-20 sm:w-24 whitespace-nowrap">Actions</th>
+                              <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 whitespace-nowrap">Product</th>
+                              <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 whitespace-nowrap">Capacity</th>
+                              <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 whitespace-nowrap">Yield</th>
+                              <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 whitespace-nowrap">Dough (kg)</th>
+                              <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 whitespace-nowrap">Total dough (kg)</th>
+                              <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 whitespace-nowrap">Grams</th>
+                              <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 whitespace-nowrap">Total grams</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {(() => {
+                              const profileList = selectedLineId === line.id ? capacityProfile : getCapacityProfileForLine(line.id);
+                              if (profileList.length === 0) {
+                                return (
+                                  <tr>
+                                    <td colSpan={9} className="py-8 px-4 text-center text-gray-500 text-sm">
+                                      No capacity profiles. Click Add to create one.
+                                    </td>
+                                  </tr>
+                                );
+                              }
+                              return profileList.map((entry) => (
+                                <tr
+                                  key={entry.id}
+                                  className="border-b border-gray-100 hover:bg-gray-50/80"
+                                  onClick={selectedLineId === line.id ? () => { setCapacityEditId(entry.id); setCapacityDraft({ ...entry }); } : undefined}
+                                  role={selectedLineId === line.id ? 'button' : undefined}
+                                  tabIndex={selectedLineId === line.id ? 0 : undefined}
+                                  onKeyDown={selectedLineId === line.id ? (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); setCapacityEditId(entry.id); setCapacityDraft({ ...entry }); } } : undefined}
+                                  aria-label={selectedLineId === line.id ? `Edit ${entry.capacityName || 'capacity profile'}` : undefined}
+                                >
+                                  <td className="py-2 sm:py-2.5 px-2 sm:px-4 whitespace-nowrap text-gray-800">{entry.capacityName || '—'}</td>
+                                  <td className="py-2 sm:py-2.5 px-2 sm:px-4 whitespace-nowrap" onClick={(ev) => ev.stopPropagation()}>
+                                    {selectedLineId === line.id ? (
+                                      <div className="flex gap-1">
+                                        <button type="button" onClick={() => { setCapacityEditId(entry.id); setCapacityDraft({ ...entry }); }} className="p-1 rounded-lg border border-gray-300 hover:bg-gray-100" aria-label="Edit"><Pencil className="w-4 h-4" /></button>
+                                        <button type="button" onClick={() => setCapacityDeleteConfirm({ id: entry.id, capacityName: entry.capacityName || 'this profile' })} className="p-1 rounded-lg border border-gray-300 hover:bg-red-50 text-red-600" aria-label="Delete"><Trash2 className="w-4 h-4" /></button>
+                                      </div>
+                                    ) : null}
+                                  </td>
+                                  <td className="py-2 sm:py-2.5 px-2 sm:px-4 whitespace-nowrap text-gray-800">{entry.productName || '—'}</td>
+                                  <td className="py-2 sm:py-2.5 px-2 sm:px-4 whitespace-nowrap text-gray-800">{entry.capacity ?? '—'}</td>
+                                  <td className="py-2 sm:py-2.5 px-2 sm:px-4 whitespace-nowrap text-gray-800">{entry.yield ?? '—'}</td>
+                                  <td className="py-2 sm:py-2.5 px-2 sm:px-4 whitespace-nowrap text-gray-800">{entry.doughWeightKg ?? '—'}</td>
+                                  <td className="py-2 sm:py-2.5 px-2 sm:px-4 whitespace-nowrap text-gray-800">{entry.totalDoughWeightKg ?? '—'}</td>
+                                  <td className="py-2 sm:py-2.5 px-2 sm:px-4 whitespace-nowrap text-gray-800">{entry.gramsPerUnit ?? '—'}</td>
+                                  <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-700 whitespace-nowrap">
+                                    {entry.totalDoughWeightKg != null && !Number.isNaN(entry.totalDoughWeightKg) ? (entry.totalDoughWeightKg * 1000).toLocaleString('en-US', { maximumFractionDigits: 0 }) : '—'}
+                                  </td>
+                                </tr>
+                              ));
+                            })()}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                    {selectedLineId === line.id && (
+                      <div className="px-3 sm:px-4 pb-3 sm:pb-4 flex justify-end">
+                        <button
+                          type="button"
+                          onClick={() => setCapacityAddModalOpen(true)}
+                          className="inline-flex items-center gap-1 px-3 py-1.5 sm:py-2 rounded-lg bg-primary text-white font-medium hover:bg-primary-dark shrink-0 text-sm sm:text-base"
+                        >
+                          <Plus className="w-4 h-4 inline" /> Add
+                        </button>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Add Capacity Profile modal */}
+                  {selectedLineId === line.id && (
+                    <Dialog.Root open={capacityAddModalOpen} onOpenChange={setCapacityAddModalOpen}>
+                      <Dialog.Portal>
+                        <Dialog.Overlay className="fixed inset-0 bg-black/50 z-40" />
+                        <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-full max-w-md -translate-x-1/2 -translate-y-1/2 rounded-lg border border-gray-200 bg-white p-4 sm:p-6 shadow-lg max-h-[90vh] overflow-y-auto">
+                          <Dialog.Title className="text-base sm:text-lg font-semibold text-gray-900">Add Capacity Profile</Dialog.Title>
+                          <Dialog.Description className="text-sm text-gray-600 mt-0.5">Add a new capacity profile for {line.name}. All fields use the same units as the table.</Dialog.Description>
+                          <form
+                            className="mt-4 space-y-3"
+                            onSubmit={(e) => { e.preventDefault(); if (newCapacityName.trim()) handleCapacityAdd(); }}
+                          >
+                            <div>
+                              <label className="block text-sm font-medium text-gray-700 mb-1">Capacity name (e.g. 8s)</label>
+                              <input
+                                type="text"
+                                value={newCapacityName}
+                                onChange={(e) => setNewCapacityName(e.target.value)}
+                                placeholder="Capacity name (e.g. 8s)"
+                                className="border border-gray-300 rounded-lg px-3 py-2 w-full text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-sm font-medium text-gray-700 mb-1">Product</label>
+                              <select
+                                value={newCapacityProduct}
+                                onChange={(e) => setNewCapacityProduct(e.target.value)}
+                                className="border border-gray-300 rounded-lg px-3 py-2 w-full text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary"
+                              >
+                                <option value="">— Select product —</option>
+                                {recipes.map((r) => (
+                                  <option key={r.id} value={r.name}>{r.name}</option>
+                                ))}
+                              </select>
+                            </div>
+                            <div className="grid grid-cols-2 gap-3">
+                              <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-1">Capacity</label>
+                                <input
+                                  type="number"
+                                  value={newCapacityValue}
+                                  onChange={(e) => setNewCapacityValue(e.target.value)}
+                                  placeholder="Capacity"
+                                  className="border border-gray-300 rounded-lg px-3 py-2 w-full text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary"
+                                />
+                              </div>
+                              <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-1">Yield</label>
+                                <input
+                                  type="number"
+                                  value={newCapacityYield}
+                                  onChange={(e) => setNewCapacityYield(e.target.value)}
+                                  placeholder="e.g. 1092"
+                                  className="border border-gray-300 rounded-lg px-3 py-2 w-full text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary"
+                                  title="Pieces per one dough batch"
+                                />
+                              </div>
+                            </div>
+                            <div className="grid grid-cols-2 gap-3">
+                              <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-1">Dough (kg)</label>
+                                <input
+                                  type="number"
+                                  value={newCapacityDoughKg}
+                                  onChange={(e) => setNewCapacityDoughKg(e.target.value)}
+                                  placeholder="e.g. 275"
+                                  className="border border-gray-300 rounded-lg px-3 py-2 w-full text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary"
+                                />
+                              </div>
+                              <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-1">Total dough (kg)</label>
+                                <input
+                                  type="number"
+                                  step="any"
+                                  value={newCapacityTotalDoughKg}
+                                  onChange={(e) => setNewCapacityTotalDoughKg(e.target.value)}
+                                  placeholder="e.g. 505.31"
+                                  className="border border-gray-300 rounded-lg px-3 py-2 w-full text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary"
+                                />
+                              </div>
+                            </div>
+                            <div>
+                              <label className="block text-sm font-medium text-gray-700 mb-1">Grams</label>
+                              <input
+                                type="number"
+                                value={newCapacityGrams}
+                                onChange={(e) => setNewCapacityGrams(e.target.value)}
+                                placeholder="e.g. 1000"
+                                className="border border-gray-300 rounded-lg px-3 py-2 w-full text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary"
+                                title="Target weight per unit (g)"
+                              />
+                            </div>
+                            <div className="flex gap-2 pt-2 justify-end">
+                              <Dialog.Close asChild>
+                                <button type="button" className="px-3 py-2 rounded-lg border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50">
+                                  Cancel
+                                </button>
+                              </Dialog.Close>
+                              <button
+                                type="submit"
+                                disabled={!newCapacityName.trim()}
+                                className="px-3 py-2 rounded-lg bg-primary text-white text-sm font-medium disabled:opacity-50 hover:bg-primary-dark inline-flex items-center gap-1"
+                              >
+                                <Plus className="w-4 h-4" /> Add
+                              </button>
+                            </div>
+                          </form>
+                        </Dialog.Content>
+                      </Dialog.Portal>
+                    </Dialog.Root>
+                  )}
+
+                  {/* Edit Capacity Profile modal */}
+                  {selectedLineId === line.id && (
+                    <Dialog.Root open={!!capacityEditId && !!capacityDraft} onOpenChange={(open) => { if (!open) { setCapacityEditId(null); setCapacityDraft(null); } }}>
+                      <Dialog.Portal>
+                        <Dialog.Overlay className="fixed inset-0 bg-black/50 z-40" />
+                        <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-full max-w-md -translate-x-1/2 -translate-y-1/2 rounded-lg border border-gray-200 bg-white p-4 sm:p-6 shadow-lg max-h-[90vh] overflow-y-auto">
+                          <Dialog.Title className="text-base sm:text-lg font-semibold text-gray-900">Edit Capacity Profile</Dialog.Title>
+                          <Dialog.Description className="text-sm text-gray-600 mt-0.5">Update the capacity profile for {line.name}.</Dialog.Description>
+                          {capacityDraft && (
+                            <form
+                              className="mt-4 space-y-3"
+                              onSubmit={(e) => { e.preventDefault(); if (capacityDraft.capacityName?.trim()) handleCapacitySave(); }}
+                            >
+                              <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-1">Capacity name (e.g. 8s)</label>
+                                <input
+                                  type="text"
+                                  value={capacityDraft.capacityName ?? ''}
+                                  onChange={(ev) => setCapacityDraft((p) => p ? { ...p, capacityName: ev.target.value } : p)}
+                                  placeholder="Capacity name (e.g. 8s)"
+                                  className="border border-gray-300 rounded-lg px-3 py-2 w-full text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary"
+                                />
+                              </div>
+                              <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-1">Product</label>
+                                <select
+                                  value={capacityDraft.productName ?? ''}
+                                  onChange={(ev) => setCapacityDraft((p) => p ? { ...p, productName: ev.target.value } : p)}
+                                  className="border border-gray-300 rounded-lg px-3 py-2 w-full text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary"
+                                >
+                                  <option value="">— Select product —</option>
+                                  {recipes.map((r) => (
+                                    <option key={r.id} value={r.name}>{r.name}</option>
+                                  ))}
+                                </select>
+                              </div>
+                              <div className="grid grid-cols-2 gap-3">
+                                <div>
+                                  <label className="block text-sm font-medium text-gray-700 mb-1">Capacity</label>
                                   <input
                                     type="number"
-                                    value={e.capacity}
-                                    onChange={(ev) => setCapacityDraft((p) => p ? { ...p, capacity: Number(ev.target.value) || 0 } : { ...entry, capacity: Number(ev.target.value) || 0 })}
-                                    disabled={!isEditing}
-                                    className="border border-gray-300 rounded-lg px-2 py-1 w-20 sm:w-24 text-inherit disabled:bg-gray-50 disabled:cursor-not-allowed"
+                                    value={capacityDraft.capacity ?? ''}
+                                    onChange={(ev) => setCapacityDraft((p) => p ? { ...p, capacity: Number(ev.target.value) || 0 } : p)}
+                                    placeholder="Capacity"
+                                    className="border border-gray-300 rounded-lg px-3 py-2 w-full text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary"
                                   />
-                                </td>
-                                <td className="py-2 sm:py-2.5 px-3 sm:px-4">
-                                  {isEditing ? (
-                                    <div className="flex flex-wrap gap-1">
-                                      <button type="button" onClick={handleCapacitySave} className="px-2 py-1 rounded-lg bg-primary text-white text-xs font-medium">Save</button>
-                                      <button type="button" onClick={() => { setCapacityEditId(null); setCapacityDraft(null); }} className="px-2 py-1 rounded-lg border border-gray-300 text-xs font-medium">Cancel</button>
-                                    </div>
-                                  ) : selectedLineId === line.id ? (
-                                    <div className="flex gap-1">
-                                      <button type="button" onClick={() => { setCapacityEditId(entry.id); setCapacityDraft({ ...entry }); }} className="p-1 rounded-lg border border-gray-300 hover:bg-gray-100" aria-label="Edit"><Pencil className="w-4 h-4" /></button>
-                                      <button type="button" onClick={() => handleCapacityDelete(entry.id)} className="p-1 rounded-lg border border-gray-300 hover:bg-red-50 text-red-600" aria-label="Delete"><Trash2 className="w-4 h-4" /></button>
-                                    </div>
-                                  ) : null}
-                                </td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                      {selectedLineId === line.id && (
-                        <div className="flex flex-wrap gap-2 mt-3 items-center">
-                          <input
-                            type="text"
-                            value={newCapacityName}
-                            onChange={(e) => setNewCapacityName(e.target.value)}
-                            placeholder="Capacity name (e.g. 8s)"
-                            className="border border-gray-300 rounded-lg px-2 py-1.5 sm:py-2 text-xs sm:text-sm w-28 sm:w-32"
-                          />
-                          <select
-                            value={newCapacityProduct}
-                            onChange={(e) => setNewCapacityProduct(e.target.value)}
-                            className="border border-gray-300 rounded-lg px-2 py-1.5 sm:py-2 text-xs sm:text-sm max-w-[160px] sm:max-w-[200px]"
-                          >
-                            <option value="">— Select product —</option>
-                            {recipes.map((r) => (
-                              <option key={r.id} value={r.name}>{r.name}</option>
-                            ))}
-                          </select>
-                          <input
-                            type="number"
-                            value={newCapacityValue}
-                            onChange={(e) => setNewCapacityValue(e.target.value)}
-                            placeholder="Capacity"
-                            className="border border-gray-300 rounded-lg px-2 py-1.5 sm:py-2 text-xs sm:text-sm w-20 sm:w-28"
-                          />
-                          <button type="button" onClick={handleCapacityAdd} disabled={!newCapacityName.trim()} className="inline-flex items-center gap-1 px-3 py-1.5 sm:py-2 rounded-lg bg-primary text-white text-xs sm:text-sm font-medium disabled:opacity-50 shrink-0">
-                            <Plus className="w-4 h-4 inline" /> Add
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                  </div>
+                                </div>
+                                <div>
+                                  <label className="block text-sm font-medium text-gray-700 mb-1">Yield</label>
+                                  <input
+                                    type="number"
+                                    value={capacityDraft.yield ?? ''}
+                                    onChange={(ev) => setCapacityDraft((p) => p ? { ...p, yield: ev.target.value === '' ? null : Number(ev.target.value) } : p)}
+                                    placeholder="e.g. 1092"
+                                    className="border border-gray-300 rounded-lg px-3 py-2 w-full text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary"
+                                    title="Pieces per one dough batch"
+                                  />
+                                </div>
+                              </div>
+                              <div className="grid grid-cols-2 gap-3">
+                                <div>
+                                  <label className="block text-sm font-medium text-gray-700 mb-1">Dough (kg)</label>
+                                  <input
+                                    type="number"
+                                    value={capacityDraft.doughWeightKg ?? ''}
+                                    onChange={(ev) => setCapacityDraft((p) => p ? { ...p, doughWeightKg: ev.target.value === '' ? null : Number(ev.target.value) } : p)}
+                                    placeholder="e.g. 275"
+                                    className="border border-gray-300 rounded-lg px-3 py-2 w-full text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="block text-sm font-medium text-gray-700 mb-1">Total dough (kg)</label>
+                                  <input
+                                    type="number"
+                                    step="any"
+                                    value={capacityDraft.totalDoughWeightKg ?? ''}
+                                    onChange={(ev) => setCapacityDraft((p) => p ? { ...p, totalDoughWeightKg: ev.target.value === '' ? null : Number(ev.target.value) } : p)}
+                                    placeholder="e.g. 505.31"
+                                    className="border border-gray-300 rounded-lg px-3 py-2 w-full text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary"
+                                  />
+                                </div>
+                              </div>
+                              <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-1">Grams</label>
+                                <input
+                                  type="number"
+                                  value={capacityDraft.gramsPerUnit ?? ''}
+                                  onChange={(ev) => setCapacityDraft((p) => p ? { ...p, gramsPerUnit: ev.target.value === '' ? null : Number(ev.target.value) } : p)}
+                                  placeholder="e.g. 1000"
+                                  className="border border-gray-300 rounded-lg px-3 py-2 w-full text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary"
+                                  title="Target weight per unit (g)"
+                                />
+                              </div>
+                              <div className="flex gap-2 pt-2 justify-end">
+                                <Dialog.Close asChild>
+                                  <button type="button" className="px-3 py-2 rounded-lg border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50">
+                                    Cancel
+                                  </button>
+                                </Dialog.Close>
+                                <button
+                                  type="submit"
+                                  disabled={!capacityDraft.capacityName?.trim()}
+                                  className="px-3 py-2 rounded-lg bg-primary text-white text-sm font-medium disabled:opacity-50 hover:bg-primary-dark inline-flex items-center gap-1"
+                                >
+                                  <Check className="w-4 h-4" /> Save
+                                </button>
+                              </div>
+                            </form>
+                          )}
+                        </Dialog.Content>
+                      </Dialog.Portal>
+                    </Dialog.Root>
+                  )}
+
+                  {/* Delete Capacity Profile confirmation modal */}
+                  {selectedLineId === line.id && (
+                    <Dialog.Root open={!!capacityDeleteConfirm} onOpenChange={(open) => { if (!open) setCapacityDeleteConfirm(null); }}>
+                      <Dialog.Portal>
+                        <Dialog.Overlay className="fixed inset-0 bg-black/50 z-40" />
+                        <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-full max-w-sm -translate-x-1/2 -translate-y-1/2 rounded-lg border border-gray-200 bg-white p-4 sm:p-6 shadow-lg">
+                          <Dialog.Title className="text-base sm:text-lg font-semibold text-gray-900">Delete capacity profile</Dialog.Title>
+                          <Dialog.Description className="text-sm text-gray-600 mt-1">
+                            Are you sure you want to delete {capacityDeleteConfirm?.capacityName ?? 'this profile'}?
+                          </Dialog.Description>
+                          <div className="flex gap-2 pt-4 justify-end">
+                            <Dialog.Close asChild>
+                              <button type="button" className="px-3 py-2 rounded-lg border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50">
+                                Cancel
+                              </button>
+                            </Dialog.Close>
+                            <button
+                              type="button"
+                              onClick={() => capacityDeleteConfirm && handleCapacityDelete(capacityDeleteConfirm.id)}
+                              className="px-3 py-2 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-700 inline-flex items-center gap-1"
+                            >
+                              <Trash2 className="w-4 h-4" /> Delete
+                            </button>
+                          </div>
+                        </Dialog.Content>
+                      </Dialog.Portal>
+                    </Dialog.Root>
+                  )}
 
                   {/* Process line + Machines/Equipment */}
                   <div>
@@ -581,148 +886,254 @@ export default function ProductionView() {
                       Process line — {line.name}
                     </h3>
                     <div className="p-3 sm:p-4">
-                      {selectedLineId === line.id && (
-                        <div className="flex flex-wrap gap-2 items-center mb-3 sm:mb-4">
-                          <input
-                            type="text"
-                            value={newProcessName}
-                            onChange={(e) => setNewProcessName(e.target.value)}
-                            placeholder="Process name (e.g. Mixing)"
-                            className="border border-gray-300 rounded-lg px-2 py-1.5 sm:py-2 text-xs sm:text-sm w-full min-w-0 sm:w-40"
-                          />
-                          <button type="button" onClick={handleAddProcess} disabled={!newProcessName.trim()} className="inline-flex items-center gap-1 px-3 py-1.5 sm:py-2 rounded-lg bg-primary text-white text-xs sm:text-sm font-medium disabled:opacity-50 shrink-0">
-                            <Plus className="w-4 h-4 inline" /> Add process
-                          </button>
-                        </div>
-                      )}
                   {(() => {
                     const procs = getProcessesForLine(line.id);
-                    if (procs.length === 0) return <p className="text-xs sm:text-sm 2xl:text-base text-muted">No processes yet. Add a process above.</p>;
+                    const tabValue = processTabValueByLine[line.id] ?? (procs[0]?.id ?? 'add-process');
+                    const setTabValue = (v) => setProcessTabValueByLine((p) => ({ ...p, [line.id]: v }));
                     return (
-                      <Tabs.Root defaultValue={procs[0]?.id} key={`${line.id}-process`} className="w-full min-w-0">
-                        <Tabs.List className="flex gap-1 border-b border-gray-200 bg-gray-50 px-2 pt-2 overflow-x-auto min-w-0">
+                      <Tabs.Root
+                        value={procs.some((p) => p.id === tabValue) || tabValue === 'add-process' ? tabValue : (procs[0]?.id ?? 'add-process')}
+                        onValueChange={setTabValue}
+                        key={`${line.id}-process`}
+                        className="w-full min-w-0 flex flex-col flex-1 min-h-0"
+                      >
+                        <p className="text-xs sm:text-sm text-gray-500 mb-1.5" aria-hidden>Process tabs — select a process to view or edit</p>
+                        <Tabs.List className="flex gap-1 border-b-2 border-gray-200 bg-gray-100/80 px-2 pt-2 pb-0 overflow-x-auto overflow-y-hidden flex-nowrap min-w-0 rounded-t-lg" role="tablist" aria-label="Process tabs">
                           {procs.map((proc) => (
                             <Tabs.Trigger
                               key={proc.id}
                               value={proc.id}
-                              className="px-3 py-2 sm:py-2.5 text-xs sm:text-sm md:text-base font-medium rounded-t-lg shrink-0 transition-colors data-[state=active]:bg-white data-[state=active]:border data-[state=active]:border-b-0 data-[state=active]:border-gray-200 data-[state=inactive]:text-gray-600"
+                              role="tab"
+                              className="px-3 py-2 sm:py-2.5 text-xs sm:text-sm md:text-base font-medium rounded-t-lg shrink-0 transition-colors border border-transparent border-b-0 -mb-px data-[state=active]:bg-white data-[state=active]:border data-[state=active]:border-gray-200 data-[state=active]:border-b-white data-[state=active]:text-gray-900 data-[state=active]:font-semibold data-[state=active]:shadow-sm data-[state=inactive]:text-gray-500 data-[state=inactive]:hover:text-gray-700 data-[state=inactive]:hover:bg-gray-200/50"
                             >
                               {proc.name}
                             </Tabs.Trigger>
                           ))}
+                          <Tabs.Trigger
+                            value="add-process"
+                            role="tab"
+                            className="px-3 py-2 sm:py-2.5 text-xs sm:text-sm md:text-base font-medium rounded-t-lg shrink-0 transition-colors border border-transparent border-b-0 -mb-px data-[state=active]:bg-white data-[state=active]:border data-[state=active]:border-gray-200 data-[state=active]:border-b-white data-[state=active]:text-gray-900 data-[state=active]:font-semibold data-[state=active]:shadow-sm data-[state=inactive]:text-gray-500 data-[state=inactive]:hover:text-gray-700 data-[state=inactive]:hover:bg-gray-200/50"
+                          >
+                            + Add Process
+                          </Tabs.Trigger>
                         </Tabs.List>
+
+                        {/* Add Process tab content */}
+                        <Tabs.Content
+                          value="add-process"
+                          role="tabpanel"
+                          aria-label="Add process"
+                          className="p-3 sm:p-4 border border-gray-200 border-t-0 rounded-b-lg bg-white shadow-sm data-[state=inactive]:hidden"
+                        >
+                          {selectedLineId === line.id ? (
+                            <div className="flex flex-wrap items-center gap-2">
+                              <input
+                                type="text"
+                                value={newProcessName}
+                                onChange={(e) => setNewProcessName(e.target.value)}
+                                placeholder="Process name (e.g. Mixing)"
+                                className="border border-gray-300 rounded-lg px-2 py-1.5 sm:py-2 text-xs sm:text-sm w-full min-w-0 sm:w-64"
+                                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); if (newProcessName.trim()) { handleAddProcess(); setNewProcessName(''); } } }}
+                              />
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (newProcessName.trim()) {
+                                    handleAddProcess();
+                                    setNewProcessName('');
+                                  }
+                                }}
+                                disabled={!newProcessName.trim()}
+                                className="inline-flex items-center gap-1 px-3 py-1.5 sm:py-2 rounded-lg bg-primary text-white text-xs sm:text-sm font-medium disabled:opacity-50 shrink-0"
+                                aria-label="Confirm add process"
+                              >
+                                <Check className="w-4 h-4" /> Confirm
+                              </button>
+                            </div>
+                          ) : (
+                            <p className="text-xs sm:text-sm text-muted">Select this line to add a process.</p>
+                          )}
+                        </Tabs.Content>
+
                         {procs.map((proc) => {
-                          const equipment = getMachinesForLineAndProcess(line.id, proc.id);
                           const key = `${line.id}-${proc.id}`;
+                          const mixingProfiles = getMixingProfiles(line.id, proc.id);
+                          const selectedProfileId = selectedMixingProfileId[key];
+                          const equipment = selectedProfileId ? getEquipmentForProfile(line.id, proc.id, selectedProfileId) : [];
                           const selectedId = selectedMachineId[key] ?? '';
                           const isEditingProcess = selectedLineId === line.id && processEditId === proc.id;
+                          const profileTotalMinutes = selectedProfileId ? getProfileTotalMinutes(line.id, proc.id, selectedProfileId) : 0;
                           return (
-                            <Tabs.Content key={proc.id} value={proc.id} className="p-3 sm:p-4 border border-gray-200 border-t-0 rounded-b-lg">
-                              <div className="flex flex-wrap gap-2 items-center mb-7">
-                                {isEditingProcess ? (
-                                  <>
-                                    <input
-                                      type="text"
-                                      value={processEditName}
-                                      onChange={(e) => setProcessEditName(e.target.value)}
-                                      className="border border-gray-300 rounded-lg px-2 py-1.5 text-xs sm:text-sm w-full min-w-0 sm:w-40"
-                                    />
-                                    <button type="button" onClick={handleUpdateProcess} className="px-2 py-1 rounded-lg bg-primary text-white text-xs sm:text-sm shrink-0">Save</button>
-                                    <button type="button" onClick={() => { setProcessEditId(null); setProcessEditName(''); }} className="px-2 py-1 rounded-lg border border-gray-300 text-xs sm:text-sm shrink-0">Cancel</button>
-                                  </>
-                                ) : (
-                                  selectedLineId === line.id && (
+                            <Tabs.Content
+                              key={proc.id}
+                              value={proc.id}
+                              forceMount
+                              role="tabpanel"
+                              aria-label={`${proc.name} process`}
+                              className="p-3 sm:p-4 border border-gray-200 border-t-0 rounded-b-lg bg-white shadow-sm min-h-[560px] flex flex-col flex-1 min-w-0 data-[state=inactive]:hidden"
+                            >
+                              {/* Process edit + Mixing profile: one row, justify-between */}
+                              <div className="flex flex-wrap items-center justify-between gap-2 mb-4 shrink-0">
+                                <div className="flex flex-wrap gap-2 items-center">
+                                  {isEditingProcess ? (
                                     <>
-                                      <span className="text-xs sm:text-sm text-gray-600">Process: {proc.name}</span>
-                                      <button type="button" onClick={() => { setProcessEditId(proc.id); setProcessEditName(proc.name); }} className="p-1 rounded-lg border border-gray-300 hover:bg-gray-100 text-xs" aria-label="Edit process"><Pencil className="w-4 h-4 inline" /></button>
-                                      <button type="button" onClick={() => handleDeleteProcess(proc.id)} className="p-1 rounded-lg border border-gray-300 hover:bg-red-50 text-red-600 text-xs" aria-label="Delete process"><Trash2 className="w-4 h-4 inline" /></button>
+                                      <input
+                                        type="text"
+                                        value={processEditName}
+                                        onChange={(e) => setProcessEditName(e.target.value)}
+                                        className="border border-gray-300 rounded-lg px-2 py-1.5 text-xs sm:text-sm w-full min-w-0 sm:w-40"
+                                      />
+                                      <button type="button" onClick={handleUpdateProcess} className="px-2 py-1 rounded-lg bg-primary text-white text-xs sm:text-sm shrink-0">Save</button>
+                                      <button type="button" onClick={() => { setProcessEditId(null); setProcessEditName(''); }} className="px-2 py-1 rounded-lg border border-gray-300 text-xs sm:text-sm shrink-0">Cancel</button>
                                     </>
-                                  )
+                                  ) : (
+                                    selectedLineId === line.id && (
+                                      <>
+                                        <span className="text-xs sm:text-sm text-gray-600">Process: {proc.name}</span>
+                                        <button type="button" onClick={() => { setProcessEditId(proc.id); setProcessEditName(proc.name); }} className="p-1 rounded-lg border border-gray-300 hover:bg-gray-100 text-xs" aria-label="Edit process"><Pencil className="w-4 h-4 inline" /></button>
+                                        <button type="button" onClick={() => handleDeleteProcess(proc.id)} className="p-1 rounded-lg border border-gray-300 hover:bg-red-50 text-red-600 text-xs" aria-label="Delete process"><Trash2 className="w-4 h-4 inline" /></button>
+                                      </>
+                                    )
+                                  )}
+                                </div>
+                                {selectedLineId === line.id && (
+                                  <div className="flex flex-wrap gap-2 items-center">
+                                    <label className="text-xs sm:text-sm text-gray-600">Mixing profile:</label>
+                                    <select
+                                      value={selectedProfileId ?? ''}
+                                      onChange={(e) => setSelectedMixingProfileId((p) => ({ ...p, [key]: e.target.value || null }))}
+                                      className="border border-gray-300 rounded-lg px-2 py-1.5 text-xs sm:text-sm bg-white min-w-[120px]"
+                                    >
+                                      <option value="">— Select —</option>
+                                      {mixingProfiles.map((mp) => (
+                                        <option key={mp.id} value={mp.id}>
+                                          {getProfileTotalMinutes(line.id, proc.id, mp.id)} min
+                                        </option>
+                                      ))}
+                                    </select>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        const added = addMixingProfile(line.id, proc.id);
+                                        if (added?.id) {
+                                          setLinesState(getLines());
+                                          setSelectedMixingProfileId((p) => ({ ...p, [key]: added.id }));
+                                        }
+                                      }}
+                                      className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-primary text-white text-xs sm:text-sm font-medium shrink-0"
+                                    >
+                                      <Plus className="w-4 h-4" /> Add mixing profile
+                                    </button>
+                                    {selectedProfileId && (
+                                      <span className="text-xs sm:text-sm text-gray-500">Editing — {profileTotalMinutes} min</span>
+                                    )}
+                                  </div>
                                 )}
                               </div>
-                              <p className="text-xs sm:text-sm text-muted mb-2 mt-7 font-extrabold">Machines / equipment</p>
-                              <ul className="list-disc list-inside space-y-2 pl-4">
-                                {equipment.map((item) => {
-                                  const isEditing = equipmentEdit?.lineId === line.id && equipmentEdit?.sectionId === proc.id && equipmentEdit?.itemId === item.id;
-                                  const name = isEditing && equipmentDraft ? equipmentDraft.name : item.name;
-                                  const selectedMachineIdForEdit = isEditing && equipmentDraft ? (equipmentDraft.machineId ?? '') : '';
-                                  return (
-                                    <li key={item.id} className="flex flex-wrap items-center gap-2 py-1">
-                                      {isEditing ? (
-                                        <>
-                                          <div
-                                            ref={equipmentDropdownOpen?.type === 'edit' && equipmentDropdownOpen.itemId === item.id ? equipmentDropdownRef : null}
-                                            className="relative flex-1 min-w-0 max-w-xs"
-                                          >
-                                            <button
-                                              type="button"
-                                              onClick={() => {
-                                                setEquipmentDropdownOpen({ type: 'edit', lineId: line.id, sectionId: proc.id, itemId: item.id });
-                                                setEquipmentDropdownSearch('');
-                                              }}
-                                              className="w-full text-left border border-gray-300 rounded-lg px-2 py-1 flex-1 min-w-0 text-xs sm:text-sm bg-white"
+                              {selectedProfileId ? (
+                              <section className="border border-gray-200 rounded-xl bg-gray-50/50 p-3 sm:p-4 mt-2 flex flex-col min-w-0" aria-label={`Mixing profile ${profileTotalMinutes} min`}>
+                                <h4 className="text-xs sm:text-sm md:text-base font-semibold text-gray-800 mb-3 shrink-0">Mixing profile — {profileTotalMinutes} min total</h4>
+                              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6 min-w-0">
+                                <section className="border border-gray-200 rounded-lg bg-surface-card overflow-hidden min-w-0 text-xs sm:text-sm md:text-base lg:text-lg xl:text-xl 2xl:text-2xl flex flex-col min-h-0">
+                                  <div className="p-2 sm:p-3 border-b border-gray-200 bg-surface-card-warm shrink-0">
+                                    <h4 className="font-semibold text-gray-800 text-inherit">Machines / equipment</h4>
+                                    <p className="text-muted mt-0.5 text-[0.65rem] sm:text-xs md:text-xs">Add machines and set duration (minutes) for each. Click Edit to change.</p>
+                                  </div>
+                                  <div className="p-3 sm:p-4 text-inherit">
+                              <ul className="list-none space-y-2">
+                                {equipment.length === 0 ? (
+                                  <li className="text-xs sm:text-sm text-muted py-2">No machines added yet. Select one below and click Add.</li>
+                                ) : (
+                                  equipment.map((item) => {
+                                    const minutesVal = getEquipmentMinutesForProfile(line.id, proc.id, selectedProfileId, item.id);
+                                    return (
+                                      <li key={item.id} className="flex flex-wrap items-center gap-2 py-1.5 border-b border-gray-100 last:border-0">
+                                        {equipmentEdit?.lineId === line.id && equipmentEdit?.sectionId === proc.id && equipmentEdit?.itemId === item.id ? (
+                                          <>
+                                            <div
+                                              ref={equipmentDropdownOpen?.type === 'edit' && equipmentDropdownOpen.itemId === item.id ? equipmentDropdownRef : null}
+                                              className="relative flex-1 min-w-0 max-w-xs"
                                             >
-                                              {selectedMachineIdForEdit ? machinesList.find((x) => x.id === selectedMachineIdForEdit)?.name ?? '—' : '— Select machine / equipment —'}
-                                            </button>
-                                            {equipmentDropdownOpen?.type === 'edit' && equipmentDropdownOpen.lineId === line.id && equipmentDropdownOpen.sectionId === proc.id && equipmentDropdownOpen.itemId === item.id && (
-                                              <div className="absolute left-0 right-0 top-full mt-1 z-50 bg-white border border-gray-300 rounded-lg shadow-lg py-2 min-w-[200px]">
-                                                <div className="px-2 pb-2">
-                                                  <div className="relative">
-                                                    <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" aria-hidden />
-                                                    <input
-                                                      type="text"
-                                                      value={equipmentDropdownSearch}
-                                                      onChange={(e) => setEquipmentDropdownSearch(e.target.value)}
-                                                      placeholder="Search..."
-                                                      className="w-full pl-7 pr-2 py-1.5 border border-gray-200 rounded text-xs sm:text-sm focus:outline-none focus:ring-1 focus:ring-primary/40"
-                                                      autoFocus
-                                                      aria-label="Filter machines"
-                                                    />
+                                              <button
+                                                type="button"
+                                                onClick={() => {
+                                                  setEquipmentDropdownOpen({ type: 'edit', lineId: line.id, sectionId: proc.id, itemId: item.id });
+                                                  setEquipmentDropdownSearch('');
+                                                }}
+                                                className="w-full text-left border border-gray-300 rounded-lg px-2 py-1 flex-1 min-w-0 text-xs sm:text-sm bg-white"
+                                              >
+                                                {equipmentDraft?.machineId ? machinesList.find((x) => x.id === equipmentDraft.machineId)?.name ?? '—' : '— Select machine / equipment —'}
+                                              </button>
+                                              {equipmentDropdownOpen?.type === 'edit' && equipmentDropdownOpen.lineId === line.id && equipmentDropdownOpen.sectionId === proc.id && equipmentDropdownOpen.itemId === item.id && (
+                                                <div className="absolute left-0 right-0 top-full mt-1 z-50 bg-white border border-gray-300 rounded-lg shadow-lg py-2 min-w-[200px]">
+                                                  <div className="px-2 pb-2">
+                                                    <div className="relative">
+                                                      <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" aria-hidden />
+                                                      <input
+                                                        type="text"
+                                                        value={equipmentDropdownSearch}
+                                                        onChange={(e) => setEquipmentDropdownSearch(e.target.value)}
+                                                        placeholder="Search..."
+                                                        className="w-full pl-7 pr-2 py-1.5 border border-gray-200 rounded text-xs sm:text-sm focus:outline-none focus:ring-1 focus:ring-primary/40"
+                                                        autoFocus
+                                                        aria-label="Filter machines"
+                                                      />
+                                                    </div>
                                                   </div>
+                                                  <ul className="max-h-48 overflow-auto text-xs sm:text-sm">
+                                                    {machinesFilteredForDropdown.map((machine) => (
+                                                      <li
+                                                        key={machine.id}
+                                                        onClick={() => {
+                                                          setEquipmentDraft((p) => (p ? { ...p, name: machine.name, machineId: machine.id } : { name: machine.name, machineId: machine.id }));
+                                                          setEquipmentDropdownOpen(null);
+                                                        }}
+                                                        className="px-3 py-1.5 hover:bg-gray-100 cursor-pointer"
+                                                      >
+                                                        {machine.name}
+                                                      </li>
+                                                    ))}
+                                                    {machinesFilteredForDropdown.length === 0 && (
+                                                      <li className="px-3 py-2 text-gray-500">No matches</li>
+                                                    )}
+                                                  </ul>
                                                 </div>
-                                                <ul className="max-h-48 overflow-auto text-xs sm:text-sm">
-                                                  {machinesFilteredForDropdown.map((machine) => (
-                                                    <li
-                                                      key={machine.id}
-                                                      onClick={() => {
-                                                        setEquipmentDraft((p) => (p ? { ...p, name: machine.name, machineId: machine.id } : { name: machine.name, machineId: machine.id }));
-                                                        setEquipmentDropdownOpen(null);
-                                                      }}
-                                                      className="px-3 py-1.5 hover:bg-gray-100 cursor-pointer"
-                                                    >
-                                                      {machine.name}
-                                                    </li>
-                                                  ))}
-                                                  {machinesFilteredForDropdown.length === 0 && (
-                                                    <li className="px-3 py-2 text-gray-500">No matches</li>
-                                                  )}
-                                                </ul>
-                                              </div>
+                                              )}
+                                            </div>
+                                            <input
+                                              type="number"
+                                              min={0}
+                                              value={equipmentDraft?.minutes ?? minutesVal ?? ''}
+                                              onChange={(e) => setEquipmentDraft((p) => ({ ...p, minutes: e.target.value === '' ? '' : Number(e.target.value) }))}
+                                              placeholder="Min"
+                                              className="border border-gray-300 rounded-lg px-2 py-1 w-16 sm:w-20 text-xs sm:text-sm"
+                                              title="Duration (minutes)"
+                                            />
+                                            <button type="button" onClick={handleEquipmentSave} className="px-2 py-1 rounded-lg bg-primary text-white text-xs shrink-0">Save</button>
+                                            <button type="button" onClick={() => { setEquipmentEdit(null); setEquipmentDraft(null); setEquipmentDropdownOpen(null); }} className="px-2 py-1 rounded-lg border border-gray-300 text-xs shrink-0">Cancel</button>
+                                          </>
+                                        ) : (
+                                          <>
+                                            <span className="text-gray-800 font-medium min-w-[120px] text-xs sm:text-sm">{item.name}</span>
+                                            <span className="text-muted text-xs sm:text-sm">{minutesVal != null && minutesVal !== '' ? `${minutesVal} min` : '—'}</span>
+                                            {selectedLineId === line.id && (
+                                              <>
+                                                <button type="button" onClick={() => { setEquipmentEdit({ lineId: line.id, sectionId: proc.id, itemId: item.id }); setEquipmentDraft({ name: item.name, machineId: item.id, minutes: minutesVal ?? '' }); }} className="p-1 rounded-lg border border-gray-300 hover:bg-gray-100" aria-label="Edit"><Pencil className="w-4 h-4" /></button>
+                                                <button type="button" onClick={() => handleEquipmentDelete(line.id, proc.id, selectedProfileId, item.id)} className="p-1 rounded-lg border border-gray-300 hover:bg-red-50 text-red-600" aria-label="Delete"><Trash2 className="w-4 h-4" /></button>
+                                              </>
                                             )}
-                                          </div>
-                                          <button type="button" onClick={handleEquipmentSave} className="px-2 py-1 rounded-lg bg-primary text-white text-xs shrink-0">Save</button>
-                                          <button type="button" onClick={() => { setEquipmentEdit(null); setEquipmentDraft(null); setEquipmentDropdownOpen(null); }} className="px-2 py-1 rounded-lg border border-gray-300 text-xs shrink-0">Cancel</button>
-                                        </>
-                                      ) : (
-                                        <>
-                                          <span className="text-gray-800 text-xs sm:text-sm">{item.name}</span>
-                                          {selectedLineId === line.id && (
-                                            <>
-                                              <button type="button" onClick={() => { setEquipmentEdit({ lineId: line.id, sectionId: proc.id, itemId: item.id }); setEquipmentDraft({ name: item.name, machineId: item.id }); }} className="p-1 rounded-lg border border-gray-300 hover:bg-gray-100" aria-label="Edit"><Pencil className="w-4 h-4" /></button>
-                                              <button type="button" onClick={() => handleEquipmentDelete(line.id, proc.id, item.id)} className="p-1 rounded-lg border border-gray-300 hover:bg-red-50 text-red-600" aria-label="Delete"><Trash2 className="w-4 h-4" /></button>
-                                            </>
-                                          )}
-                                        </>
-                                      )}
-                                    </li>
-                                  );
-                                })}
+                                          </>
+                                        )}
+                                      </li>
+                                    );
+                                  })
+                                )}
                               </ul>
-                              {selectedLineId === line.id && (
-                                <div className="flex flex-wrap gap-2 mt-3">
+                              {selectedLineId === line.id && selectedProfileId && (
+                                <div className="flex flex-wrap gap-2 mt-3 items-center">
                                   <div
                                     ref={equipmentDropdownOpen?.type === 'add' && equipmentDropdownOpen.key === key ? equipmentDropdownRef : null}
-                                    className="relative flex-1 min-w-0 max-w-xs"
+                                    className="relative min-w-[200px] sm:min-w-[240px] flex-1 max-w-[280px]"
                                   >
                                     <button
                                       type="button"
@@ -770,15 +1181,139 @@ export default function ProductionView() {
                                       </div>
                                     )}
                                   </div>
+                                  <input
+                                    type="number"
+                                    min={0}
+                                    value={newEquipmentMinutes[key] ?? ''}
+                                    onChange={(e) => setNewEquipmentMinutes((p) => ({ ...p, [key]: e.target.value }))}
+                                    placeholder="mins."
+                                    className="border border-gray-300 rounded-lg px-2 py-1.5 w-16 sm:w-20 text-xs sm:text-sm"
+                                    title="Duration (minutes)"
+                                  />
                                   <button
                                     type="button"
-                                    onClick={() => handleEquipmentAdd(line.id, proc.id)}
+                                    onClick={() => handleEquipmentAdd(line.id, proc.id, selectedProfileId, newEquipmentMinutes[key])}
                                     disabled={!selectedId}
                                     className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-primary text-white text-xs sm:text-sm font-medium shrink-0 disabled:opacity-50"
                                   >
                                     <Plus className="w-4 h-4 inline" /> Add
                                   </button>
                                 </div>
+                              )}
+                                  </div>
+                                </section>
+
+                                <section className="border border-gray-200 rounded-lg bg-surface-card overflow-hidden min-w-0 text-xs sm:text-sm md:text-base lg:text-lg xl:text-xl 2xl:text-2xl flex flex-col min-h-0">
+                                  <div className="p-2 sm:p-3 border-b border-gray-200 bg-surface-card-warm shrink-0">
+                                    <h4 className="font-semibold text-gray-800 text-inherit">Process times</h4>
+                                    <p className="text-muted mt-0.5 text-[0.65rem] sm:text-xs md:text-xs">Add process time steps (e.g. Gap, Bench Floor Time). Click Edit to change.</p>
+                                  </div>
+                                  <div className="p-3 sm:p-4 text-inherit">
+                              {(() => {
+                                const processTimes = getProcessTimesForProfile(line.id, proc.id, selectedProfileId);
+                                const isEditingPt = processTimeEdit?.lineId === line.id && processTimeEdit?.processId === proc.id;
+                                return (
+                                  <>
+                                    {processTimeDuplicateNameError && (
+                                      <p className="text-xs text-red-600 mb-2">A process time with this name already exists in this profile. Use a different name (e.g. Gap 2).</p>
+                                    )}
+                                    <ul className="list-none space-y-2 mb-3">
+                                      {processTimes.map((pt) => (
+                                        <li key={pt.id} className="flex flex-wrap items-center gap-2 py-1.5 border-b border-gray-100 last:border-0">
+                                          {isEditingPt && processTimeEdit?.processTimeId === pt.id && processTimeDraft ? (
+                                            <>
+                                              <input
+                                                type="text"
+                                                value={processTimeDraft.name}
+                                                onChange={(e) => { setProcessTimeDraft((p) => (p ? { ...p, name: e.target.value } : { name: e.target.value, minutes: 0 })); setProcessTimeDuplicateNameError(false); }}
+                                                className="border border-gray-300 rounded-lg px-2 py-1 text-xs sm:text-sm min-w-[140px]"
+                                                placeholder="Name"
+                                              />
+                                              <input
+                                                type="number"
+                                                min={0}
+                                                value={processTimeDraft.minutes ?? ''}
+                                                onChange={(e) => setProcessTimeDraft((p) => (p ? { ...p, minutes: e.target.value === '' ? '' : Number(e.target.value) } : { name: '', minutes: e.target.value }))}
+                                                className="border border-gray-300 rounded-lg px-2 py-1 w-16 sm:w-20 text-xs sm:text-sm"
+                                                placeholder="Min"
+                                              />
+                                              <span className="text-xs sm:text-sm text-muted">min</span>
+                                              <button
+                                                type="button"
+                                                onClick={() => {
+                                                  const res = updateProcessTimeInProfile(line.id, proc.id, selectedProfileId, pt.id, { name: processTimeDraft.name, minutes: processTimeDraft.minutes });
+                                                  if (res?.duplicateName) { setProcessTimeDuplicateNameError(true); return; }
+                                                  setProcessTimeDuplicateNameError(false);
+                                                  setLinesState(getLines());
+                                                  setProcessTimeEdit(null);
+                                                  setProcessTimeDraft(null);
+                                                }}
+                                                className="px-2 py-1 rounded-lg bg-primary text-white text-xs shrink-0"
+                                              >
+                                                Save
+                                              </button>
+                                              <button type="button" onClick={() => { setProcessTimeEdit(null); setProcessTimeDraft(null); setProcessTimeDuplicateNameError(false); }} className="px-2 py-1 rounded-lg border border-gray-300 text-xs shrink-0">Cancel</button>
+                                            </>
+                                          ) : (
+                                            <>
+                                              <span className="text-gray-800 text-xs sm:text-sm font-medium min-w-[120px]">{pt.name}</span>
+                                              <span className="text-xs sm:text-sm text-muted">{pt.minutes} min</span>
+                                              {selectedLineId === line.id && (
+                                                <>
+                                                  <button type="button" onClick={() => { setProcessTimeEdit({ lineId: line.id, processId: proc.id, processTimeId: pt.id }); setProcessTimeDraft({ name: pt.name, minutes: pt.minutes }); setProcessTimeDuplicateNameError(false); }} className="p-1 rounded-lg border border-gray-300 hover:bg-gray-100" aria-label="Edit"><Pencil className="w-4 h-4" /></button>
+                                                  <button type="button" onClick={() => { deleteProcessTimeFromProfile(line.id, proc.id, selectedProfileId, pt.id); setLinesState(getLines()); }} className="p-1 rounded-lg border border-gray-300 hover:bg-red-50 text-red-600" aria-label="Delete"><Trash2 className="w-4 h-4" /></button>
+                                                </>
+                                              )}
+                                            </>
+                                          )}
+                                        </li>
+                                      ))}
+                                    </ul>
+                                    {selectedLineId === line.id && selectedProfileId && (
+                                      <div className="flex flex-wrap gap-2 items-center">
+                                        <input
+                                          type="text"
+                                          value={processTimeEdit?.processTimeId ? '' : newProcessTimeName}
+                                          onChange={(e) => { setNewProcessTimeName(e.target.value); setProcessTimeDuplicateNameError(false); }}
+                                          placeholder="Process time name (e.g. Gap)"
+                                          className="border border-gray-300 rounded-lg px-2 py-1.5 text-xs sm:text-sm min-w-[200px] sm:min-w-[240px] max-w-full"
+                                          disabled={!!processTimeEdit?.processTimeId}
+                                        />
+                                        <input
+                                          type="number"
+                                          min={0}
+                                          value={processTimeEdit?.processTimeId ? '' : newProcessTimeMinutes}
+                                          onChange={(e) => setNewProcessTimeMinutes(e.target.value)}
+                                          placeholder="mins."
+                                          className="border border-gray-300 rounded-lg px-2 py-1.5 w-20 text-xs sm:text-sm"
+                                          disabled={!!processTimeEdit?.processTimeId}
+                                        />
+                                        <button
+                                          type="button"
+                                          disabled={!newProcessTimeName.trim()}
+                                          onClick={() => {
+                                            setProcessTimeDuplicateNameError(false);
+                                            const res = addProcessTimeToProfile(line.id, proc.id, selectedProfileId, { name: newProcessTimeName.trim(), minutes: newProcessTimeMinutes === '' || Number.isNaN(Number(newProcessTimeMinutes)) ? 0 : Number(newProcessTimeMinutes) });
+                                            if (res?.duplicateName) { setProcessTimeDuplicateNameError(true); return; }
+                                            setLinesState(getLines());
+                                            setNewProcessTimeName('');
+                                            setNewProcessTimeMinutes('');
+                                          }}
+                                          className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-primary text-white text-xs sm:text-sm font-medium shrink-0 disabled:opacity-50"
+                                        >
+                                          <Plus className="w-4 h-4 inline" /> Add
+                                        </button>
+                                      </div>
+                                    )}
+                                  </>
+                                );
+                              })()}
+                                  </div>
+                                </section>
+                              </div>
+                              </section>
+                              ) : (
+                                <p className="text-xs sm:text-sm text-muted mt-4">Select or add a mixing profile above to edit machines and process times.</p>
                               )}
                             </Tabs.Content>
                           );
@@ -794,6 +1329,7 @@ export default function ProductionView() {
           ))}
         </Tabs.Root>
       )}
+      </div>
         </Tabs.Content>
 
         <Tabs.Content value="machines" className="mt-0 rounded-b-card border border-gray-200 border-t-0 bg-surface-card min-w-0">

@@ -20,8 +20,8 @@ function defaultEquipmentBySection(sectionIds) {
 }
 
 const DEFAULT_LOAF_CAPACITY = [
-  { id: 'cap-8s', capacityName: '8s', productName: 'Everyday Bread 8s', capacity: 2340 },
-  { id: 'cap-12s', capacityName: '12s', productName: 'Everyday Bread 12s', capacity: 1575 },
+  { id: 'cap-8s', capacityName: '8s', productName: 'Everyday Bread 8s', capacity: 2340, yield: 1092, doughWeightKg: 275, totalDoughWeightKg: 505.31, gramsPerUnit: 1000 },
+  { id: 'cap-12s', capacityName: '12s', productName: 'Everyday Bread 12s', capacity: 1575, yield: 728, doughWeightKg: 275, totalDoughWeightKg: 505.31, gramsPerUnit: 1000 },
 ];
 
 function normalizeLine(l) {
@@ -31,6 +31,10 @@ function normalizeLine(l) {
         capacityName: String(e.capacityName ?? e.productOrType ?? '').trim(),
         productName: String(e.productName ?? '').trim(),
         capacity: Number(e.capacity) || 0,
+        yield: e.yield !== undefined ? Number(e.yield) : null,
+        doughWeightKg: e.doughWeightKg !== undefined ? Number(e.doughWeightKg) : null,
+        totalDoughWeightKg: e.totalDoughWeightKg !== undefined ? Number(e.totalDoughWeightKg) : null,
+        gramsPerUnit: e.gramsPerUnit !== undefined ? Number(e.gramsPerUnit) : null,
       })).filter((e) => e.capacityName || e.productName)
     : [];
   let processes = Array.isArray(l.processes) ? l.processes.map((p) => ({ ...p, id: p.id || `proc-${Date.now()}`, name: String(p.name || '').trim(), order: Number(p.order) ?? 0 })) : [];
@@ -49,12 +53,52 @@ function normalizeLine(l) {
     );
   }
   const equipmentByProcessFinal = equipmentByProcess;
+  const equipmentMinutesByProcess = l.equipmentMinutesByProcess && typeof l.equipmentMinutesByProcess === 'object' ? { ...l.equipmentMinutesByProcess } : {};
+  const processTimesByProcess = l.processTimesByProcess && typeof l.processTimesByProcess === 'object' ? { ...l.processTimesByProcess } : {};
+  // Mixing profiles per process: each profile has equipment, equipmentMinutes, processTimes. Migrate legacy data into one profile if needed.
+  let mixingProfilesByProcess = l.mixingProfilesByProcess && typeof l.mixingProfilesByProcess === 'object' ? { ...l.mixingProfilesByProcess } : {};
+  Object.keys(mixingProfilesByProcess).forEach((procId) => {
+    const list = mixingProfilesByProcess[procId];
+    mixingProfilesByProcess[procId] = Array.isArray(list)
+      ? list.map((mp) => ({
+          id: mp.id || `mp-${procId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          equipment: Array.isArray(mp.equipment) ? mp.equipment.map((e) => ({ id: e.id, name: String(e.name ?? '').trim() })) : [],
+          equipmentMinutes: mp.equipmentMinutes && typeof mp.equipmentMinutes === 'object' ? { ...mp.equipmentMinutes } : {},
+          processTimes: Array.isArray(mp.processTimes) ? mp.processTimes.map((pt) => ({ id: pt.id || `pt-${Date.now()}`, name: String(pt.name ?? '').trim(), minutes: Number(pt.minutes) || 0 })) : [],
+        }))
+      : [];
+  });
+  // Migration: if a process has equipment/processTimes but no mixing profiles, create one profile from current data
+  const procList = processes;
+  procList.forEach((p) => {
+    const pid = p.id;
+    const eqFromSection = equipmentByProcessFinal[pid]?.length > 0 ? equipmentByProcessFinal[pid] : [];
+    const eqMinutes = equipmentMinutesByProcess[pid] || {};
+    const ptList = processTimesByProcess[pid] || [];
+    const hasLegacy = eqFromSection.length > 0 || Object.keys(eqMinutes).length > 0 || ptList.length > 0;
+    const hasProfiles = Array.isArray(mixingProfilesByProcess[pid]) && mixingProfilesByProcess[pid].length > 0;
+    if (hasLegacy && !hasProfiles) {
+      const equipment = eqFromSection.length > 0
+        ? eqFromSection.map((e) => ({ id: e.id, name: e.name ?? '' }))
+        : Object.keys(eqMinutes).map((machineId) => ({ id: machineId, name: 'Unknown' }));
+      mixingProfilesByProcess = { ...mixingProfilesByProcess, [pid]: [{
+        id: `mp-${pid}-${Date.now()}-migrated`,
+        equipment,
+        equipmentMinutes: { ...eqMinutes },
+        processTimes: ptList.map((x) => ({ id: x.id, name: x.name ?? '', minutes: Number(x.minutes) || 0 })),
+      }] };
+    }
+    if (!Array.isArray(mixingProfilesByProcess[pid])) mixingProfilesByProcess = { ...mixingProfilesByProcess, [pid]: [] };
+  });
   return {
     id: l.id,
     name: String(l.name || '').trim(),
     capacityProfile,
     processes,
     equipmentByProcess: equipmentByProcessFinal,
+    equipmentMinutesByProcess,
+    processTimesByProcess,
+    mixingProfilesByProcess,
   };
 }
 
@@ -150,6 +194,9 @@ export function updateLine(id, updates) {
     capacityProfile: updates.capacityProfile !== undefined ? updates.capacityProfile : current.capacityProfile,
     processes: updates.processes !== undefined ? updates.processes : current.processes,
     equipmentByProcess: updates.equipmentByProcess !== undefined ? updates.equipmentByProcess : current.equipmentByProcess,
+    equipmentMinutesByProcess: updates.equipmentMinutesByProcess !== undefined ? updates.equipmentMinutesByProcess : current.equipmentMinutesByProcess,
+    processTimesByProcess: updates.processTimesByProcess !== undefined ? updates.processTimesByProcess : current.processTimesByProcess,
+    mixingProfilesByProcess: updates.mixingProfilesByProcess !== undefined ? updates.mixingProfilesByProcess : current.mixingProfilesByProcess,
   });
   lines = [...lines.slice(0, idx), next, ...lines.slice(idx + 1)];
   persist();
@@ -221,6 +268,10 @@ export function setCapacityProfileForLine(lineId, entries) {
     capacityName: String(e.capacityName ?? '').trim(),
     productName: String(e.productName ?? '').trim(),
     capacity: Number(e.capacity) || 0,
+    yield: e.yield !== undefined ? Number(e.yield) : null,
+    doughWeightKg: e.doughWeightKg !== undefined ? Number(e.doughWeightKg) : null,
+    totalDoughWeightKg: e.totalDoughWeightKg !== undefined ? Number(e.totalDoughWeightKg) : null,
+    gramsPerUnit: e.gramsPerUnit !== undefined ? Number(e.gramsPerUnit) : null,
   })) : [];
   lines = [...lines.slice(0, idx), line, ...lines.slice(idx + 1)];
   persist();
@@ -234,6 +285,10 @@ export function addCapacityEntryForLine(lineId, entry) {
     capacityName: String(entry?.capacityName ?? '').trim(),
     productName: String(entry?.productName ?? '').trim(),
     capacity: Number(entry?.capacity) || 0,
+    yield: entry?.yield !== undefined ? Number(entry.yield) : null,
+    doughWeightKg: entry?.doughWeightKg !== undefined ? Number(entry.doughWeightKg) : null,
+    totalDoughWeightKg: entry?.totalDoughWeightKg !== undefined ? Number(entry.totalDoughWeightKg) : null,
+    gramsPerUnit: entry?.gramsPerUnit !== undefined ? Number(entry.gramsPerUnit) : null,
   };
   const nextProfile = [...(line.capacityProfile || []), newEntry];
   setCapacityProfileForLine(lineId, nextProfile);
@@ -254,22 +309,44 @@ export function deleteCapacityEntryForLine(lineId, entryId) {
   setCapacityProfileForLine(lineId, line.capacityProfile.filter((e) => e.id !== entryId));
 }
 
-/** Resolve capacity by product name for a given line (used by Scheduling via Loaf Line). */
+/** Resolve capacity (pieces) by product name for a given line (used by Scheduling via Loaf Line). */
 export function getCapacityForProductFromLine(lineId, productName) {
+  const entry = getCapacityEntryForProduct(lineId, productName);
+  if (entry != null) return entry.capacity;
+  const trimmed = (productName || '').trim();
+  if (trimmed.endsWith('8s')) return 2340;
+  if (trimmed.endsWith('12s')) return 1575;
+  return null;
+}
+
+/** Resolve capacity entry (capacity + doughWeightKg) by product name for a given line. */
+export function getCapacityEntryForProduct(lineId, productName) {
   if (!productName || typeof productName !== 'string') return null;
   const profile = getCapacityProfileForLine(lineId);
   const exact = profile.find((e) => e.productName === productName.trim());
-  if (exact != null) return exact.capacity;
+  if (exact != null) return exact;
   const trimmed = productName.trim();
   if (trimmed.endsWith('8s')) {
     const e = profile.find((x) => x.productName?.endsWith('8s') || x.capacityName === '8s');
-    return e != null ? e.capacity : 2340;
+    return e != null ? e : null;
   }
   if (trimmed.endsWith('12s')) {
     const e = profile.find((x) => x.productName?.endsWith('12s') || x.capacityName === '12s');
-    return e != null ? e.capacity : 1575;
+    return e != null ? e : null;
   }
   return null;
+}
+
+/** Resolve dough weight (kg) by product name for a given line. */
+export function getDoughWeightKgForProductFromLine(lineId, productName) {
+  const entry = getCapacityEntryForProduct(lineId, productName);
+  return entry?.doughWeightKg != null ? entry.doughWeightKg : null;
+}
+
+/** Resolve yield (pieces per one dough batch, e.g. 1092 for 8s) by product name for a given line. */
+export function getYieldForProductFromLine(lineId, productName) {
+  const entry = getCapacityEntryForProduct(lineId, productName);
+  return entry?.yield != null ? entry.yield : null;
 }
 
 // ----- Processes per line -----
@@ -307,7 +384,293 @@ export function deleteProcess(lineId, processId) {
   const processes = (line.processes || []).filter((p) => p.id !== processId);
   const equipmentByProcess = { ...(line.equipmentByProcess || {}) };
   delete equipmentByProcess[processId];
-  updateLine(lineId, { processes, equipmentByProcess });
+  const equipmentMinutesByProcess = { ...(line.equipmentMinutesByProcess || {}) };
+  delete equipmentMinutesByProcess[processId];
+  const processTimesByProcess = { ...(line.processTimesByProcess || {}) };
+  delete processTimesByProcess[processId];
+  const mixingProfilesByProcess = { ...(line.mixingProfilesByProcess || {}) };
+  delete mixingProfilesByProcess[processId];
+  updateLine(lineId, { processes, equipmentByProcess, equipmentMinutesByProcess, processTimesByProcess, mixingProfilesByProcess });
+}
+
+/** Get duration in minutes for a machine assigned to a line+process. */
+export function getEquipmentMinutes(lineId, processId, machineId) {
+  const line = lines.find((l) => l.id === lineId);
+  if (!line || !line.equipmentMinutesByProcess) return null;
+  const byProcess = line.equipmentMinutesByProcess[processId];
+  if (!byProcess || typeof byProcess !== 'object') return null;
+  const v = byProcess[machineId];
+  return v !== undefined && v !== null && !Number.isNaN(Number(v)) ? Number(v) : null;
+}
+
+/** Set duration in minutes for a machine assigned to a line+process. Pass null to clear. */
+export function setEquipmentMinutes(lineId, processId, machineId, minutes) {
+  const idx = lines.findIndex((l) => l.id === lineId);
+  if (idx === -1) return;
+  const line = { ...lines[idx] };
+  line.equipmentMinutesByProcess = { ...(line.equipmentMinutesByProcess || {}) };
+  line.equipmentMinutesByProcess[processId] = { ...(line.equipmentMinutesByProcess[processId] || {}) };
+  if (minutes === null || minutes === undefined || minutes === '') {
+    delete line.equipmentMinutesByProcess[processId][machineId];
+  } else {
+    line.equipmentMinutesByProcess[processId][machineId] = Number(minutes);
+  }
+  lines = [...lines.slice(0, idx), line, ...lines.slice(idx + 1)];
+  persist();
+}
+
+/** Get process times (name + minutes) for a line+process. */
+export function getProcessTimesForProcess(lineId, processId) {
+  const line = lines.find((l) => l.id === lineId);
+  if (!line || !line.processTimesByProcess) return [];
+  const arr = line.processTimesByProcess[processId];
+  return Array.isArray(arr) ? arr.map((e) => ({ ...e })) : [];
+}
+
+/** Add a process time (name + minutes) for a line+process. */
+export function addProcessTime(lineId, processId, entry) {
+  const idx = lines.findIndex((l) => l.id === lineId);
+  if (idx === -1) return null;
+  const line = { ...lines[idx] };
+  line.processTimesByProcess = { ...(line.processTimesByProcess || {}) };
+  const list = [...(line.processTimesByProcess[processId] || [])];
+  const newEntry = {
+    id: entry?.id || `pt-${processId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    name: String(entry?.name ?? '').trim(),
+    minutes: entry?.minutes !== undefined && entry?.minutes !== '' && !Number.isNaN(Number(entry.minutes)) ? Number(entry.minutes) : 0,
+  };
+  list.push(newEntry);
+  line.processTimesByProcess[processId] = list;
+  lines = [...lines.slice(0, idx), line, ...lines.slice(idx + 1)];
+  persist();
+  return newEntry;
+}
+
+/** Update a process time entry. */
+export function updateProcessTime(lineId, processId, processTimeId, updates) {
+  const idx = lines.findIndex((l) => l.id === lineId);
+  if (idx === -1) return null;
+  const line = { ...lines[idx] };
+  const list = line.processTimesByProcess?.[processId];
+  if (!Array.isArray(list)) return null;
+  const i = list.findIndex((e) => e.id === processTimeId);
+  if (i === -1) return null;
+  line.processTimesByProcess = { ...(line.processTimesByProcess || {}) };
+  const nextList = [...list];
+  nextList[i] = {
+    ...nextList[i],
+    ...updates,
+    name: updates.name !== undefined ? String(updates.name).trim() : nextList[i].name,
+    minutes: updates.minutes !== undefined && !Number.isNaN(Number(updates.minutes)) ? Number(updates.minutes) : nextList[i].minutes,
+  };
+  line.processTimesByProcess[processId] = nextList;
+  lines = [...lines.slice(0, idx), line, ...lines.slice(idx + 1)];
+  persist();
+  return nextList[i];
+}
+
+/** Delete a process time entry. */
+export function deleteProcessTime(lineId, processId, processTimeId) {
+  const idx = lines.findIndex((l) => l.id === lineId);
+  if (idx === -1) return;
+  const line = { ...lines[idx] };
+  const list = (line.processTimesByProcess?.[processId] || []).filter((e) => e.id !== processTimeId);
+  line.processTimesByProcess = { ...(line.processTimesByProcess || {}) };
+  line.processTimesByProcess[processId] = list;
+  lines = [...lines.slice(0, idx), line, ...lines.slice(idx + 1)];
+  persist();
+}
+
+// ----- Mixing profiles (per line, per process) -----
+/** Get mixing profiles for a line+process. Each profile has id, equipment, equipmentMinutes, processTimes. */
+export function getMixingProfiles(lineId, processId) {
+  const line = lines.find((l) => l.id === lineId);
+  if (!line || !line.mixingProfilesByProcess) return [];
+  const list = line.mixingProfilesByProcess[processId];
+  return Array.isArray(list) ? list.map((mp) => ({ ...mp, equipment: [...(mp.equipment || [])], equipmentMinutes: { ...(mp.equipmentMinutes || {}) }, processTimes: (mp.processTimes || []).map((e) => ({ ...e })) })) : [];
+}
+
+/** Total minutes for a profile (sum of equipment minutes + process time minutes). Used as profile display name. */
+export function getProfileTotalMinutes(lineId, processId, profileId) {
+  const line = lines.find((l) => l.id === lineId);
+  if (!line || !line.mixingProfilesByProcess) return 0;
+  const list = line.mixingProfilesByProcess[processId];
+  const profile = Array.isArray(list) ? list.find((mp) => mp.id === profileId) : null;
+  if (!profile) return 0;
+  let total = 0;
+  Object.values(profile.equipmentMinutes || {}).forEach((v) => { if (v != null && !Number.isNaN(Number(v))) total += Number(v); });
+  (profile.processTimes || []).forEach((pt) => { total += Number(pt.minutes) || 0; });
+  return total;
+}
+
+export function addMixingProfile(lineId, processId) {
+  const idx = lines.findIndex((l) => l.id === lineId);
+  if (idx === -1) return null;
+  const line = lines[idx];
+  const byProcess = { ...(line.mixingProfilesByProcess || {}) };
+  const list = [...(byProcess[processId] || [])];
+  const id = `mp-${processId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  list.push({ id, equipment: [], equipmentMinutes: {}, processTimes: [] });
+  byProcess[processId] = list;
+  lines = [...lines.slice(0, idx), { ...line, mixingProfilesByProcess: byProcess }, ...lines.slice(idx + 1)];
+  persist();
+  return { id };
+}
+
+export function deleteMixingProfile(lineId, processId, profileId) {
+  const idx = lines.findIndex((l) => l.id === lineId);
+  if (idx === -1) return;
+  const line = lines[idx];
+  const byProcess = { ...(line.mixingProfilesByProcess || {}) };
+  byProcess[processId] = (byProcess[processId] || []).filter((mp) => mp.id !== profileId);
+  lines = [...lines.slice(0, idx), { ...line, mixingProfilesByProcess: byProcess }, ...lines.slice(idx + 1)];
+  persist();
+}
+
+/** Get equipment list for a mixing profile. */
+export function getEquipmentForProfile(lineId, processId, profileId) {
+  const profiles = getMixingProfiles(lineId, processId);
+  const p = profiles.find((mp) => mp.id === profileId);
+  return p && Array.isArray(p.equipment) ? p.equipment.map((e) => ({ ...e })) : [];
+}
+
+/** Set full equipment list for a profile. */
+export function setEquipmentForProfile(lineId, processId, profileId, equipmentList) {
+  const idx = lines.findIndex((l) => l.id === lineId);
+  if (idx === -1) return;
+  const line = lines[idx];
+  const byProcess = { ...(line.mixingProfilesByProcess || {}) };
+  const list = (byProcess[processId] || []).map((mp) => mp.id === profileId ? { ...mp, equipment: Array.isArray(equipmentList) ? equipmentList.map((e) => ({ id: e.id, name: e.name ?? '' })) : [] } : mp);
+  byProcess[processId] = list;
+  lines = [...lines.slice(0, idx), { ...line, mixingProfilesByProcess: byProcess }, ...lines.slice(idx + 1)];
+  persist();
+}
+
+export function addEquipmentItemToProfile(lineId, processId, profileId, item) {
+  const profiles = getMixingProfiles(lineId, processId);
+  const p = profiles.find((mp) => mp.id === profileId);
+  if (!p) return;
+  const eq = [...(p.equipment || []), { id: item?.id ?? item?.name, name: String(item?.name ?? 'Unnamed').trim() }];
+  const idx = lines.findIndex((l) => l.id === lineId);
+  const line = lines[idx];
+  const byProcess = { ...(line.mixingProfilesByProcess || {}) };
+  const list = (byProcess[processId] || []).map((mp) => mp.id === profileId ? { ...mp, equipment: eq } : mp);
+  byProcess[processId] = list;
+  lines = [...lines.slice(0, idx), { ...line, mixingProfilesByProcess: byProcess }, ...lines.slice(idx + 1)];
+  persist();
+}
+
+export function deleteEquipmentItemFromProfile(lineId, processId, profileId, machineId) {
+  const idx = lines.findIndex((l) => l.id === lineId);
+  if (idx === -1) return;
+  const line = lines[idx];
+  const byProcess = { ...(line.mixingProfilesByProcess || {}) };
+  const list = (byProcess[processId] || []).map((mp) => {
+    if (mp.id !== profileId) return mp;
+    const equipment = (mp.equipment || []).filter((e) => e.id !== machineId);
+    const equipmentMinutes = { ...(mp.equipmentMinutes || {}) };
+    delete equipmentMinutes[machineId];
+    return { ...mp, equipment, equipmentMinutes };
+  });
+  byProcess[processId] = list;
+  lines = [...lines.slice(0, idx), { ...line, mixingProfilesByProcess: byProcess }, ...lines.slice(idx + 1)];
+  persist();
+}
+
+export function getEquipmentMinutesForProfile(lineId, processId, profileId, machineId) {
+  const profiles = getMixingProfiles(lineId, processId);
+  const p = profiles.find((mp) => mp.id === profileId);
+  if (!p || !p.equipmentMinutes) return null;
+  const v = p.equipmentMinutes[machineId];
+  return v !== undefined && v !== null && !Number.isNaN(Number(v)) ? Number(v) : null;
+}
+
+export function setEquipmentMinutesForProfile(lineId, processId, profileId, machineId, minutes) {
+  const idx = lines.findIndex((l) => l.id === lineId);
+  if (idx === -1) return;
+  const line = lines[idx];
+  const byProcess = { ...(line.mixingProfilesByProcess || {}) };
+  const list = (byProcess[processId] || []).map((mp) => {
+    if (mp.id !== profileId) return mp;
+    const equipmentMinutes = { ...(mp.equipmentMinutes || {}) };
+    if (minutes === null || minutes === undefined || minutes === '') delete equipmentMinutes[machineId];
+    else equipmentMinutes[machineId] = Number(minutes);
+    return { ...mp, equipmentMinutes };
+  });
+  byProcess[processId] = list;
+  lines = [...lines.slice(0, idx), { ...line, mixingProfilesByProcess: byProcess }, ...lines.slice(idx + 1)];
+  persist();
+}
+
+/** Get process times for a mixing profile. */
+export function getProcessTimesForProfile(lineId, processId, profileId) {
+  const profiles = getMixingProfiles(lineId, processId);
+  const p = profiles.find((mp) => mp.id === profileId);
+  return p && Array.isArray(p.processTimes) ? p.processTimes.map((e) => ({ ...e })) : [];
+}
+
+/** Check if a process time name is already used in this profile (excluding optional processTimeId when editing). */
+export function isProcessTimeNameUsedInProfile(lineId, processId, profileId, name, excludeProcessTimeId = null) {
+  const list = getProcessTimesForProfile(lineId, processId, profileId);
+  const trimmed = String(name ?? '').trim();
+  if (!trimmed) return false;
+  return list.some((pt) => pt.id !== excludeProcessTimeId && pt.name.trim() === trimmed);
+}
+
+export function addProcessTimeToProfile(lineId, processId, profileId, entry) {
+  if (isProcessTimeNameUsedInProfile(lineId, processId, profileId, entry?.name)) return { duplicateName: true };
+  const idx = lines.findIndex((l) => l.id === lineId);
+  if (idx === -1) return null;
+  const line = lines[idx];
+  const byProcess = { ...(line.mixingProfilesByProcess || {}) };
+  const list = (byProcess[processId] || []).map((mp) => {
+    if (mp.id !== profileId) return mp;
+    const processTimes = [...(mp.processTimes || [])];
+    const newEntry = {
+      id: entry?.id || `pt-${profileId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      name: String(entry?.name ?? '').trim(),
+      minutes: entry?.minutes !== undefined && entry?.minutes !== '' && !Number.isNaN(Number(entry.minutes)) ? Number(entry.minutes) : 0,
+    };
+    processTimes.push(newEntry);
+    return { ...mp, processTimes };
+  });
+  byProcess[processId] = list;
+  lines = [...lines.slice(0, idx), { ...line, mixingProfilesByProcess: byProcess }, ...lines.slice(idx + 1)];
+  persist();
+  const profiles = getMixingProfiles(lineId, processId);
+  const p = profiles.find((mp) => mp.id === profileId);
+  const added = p?.processTimes?.find((e) => e.id === (entry?.id || p.processTimes?.[p.processTimes.length - 1]?.id));
+  return added ?? null;
+}
+
+export function updateProcessTimeInProfile(lineId, processId, profileId, processTimeId, updates) {
+  if (updates.name !== undefined && isProcessTimeNameUsedInProfile(lineId, processId, profileId, updates.name, processTimeId)) return { duplicateName: true };
+  const idx = lines.findIndex((l) => l.id === lineId);
+  if (idx === -1) return null;
+  const line = lines[idx];
+  const byProcess = { ...(line.mixingProfilesByProcess || {}) };
+  const list = (byProcess[processId] || []).map((mp) => {
+    if (mp.id !== profileId) return mp;
+    const processTimes = (mp.processTimes || []).map((pt) => pt.id === processTimeId ? { ...pt, ...updates, name: updates.name !== undefined ? String(updates.name).trim() : pt.name, minutes: updates.minutes !== undefined && !Number.isNaN(Number(updates.minutes)) ? Number(updates.minutes) : pt.minutes } : pt);
+    return { ...mp, processTimes };
+  });
+  byProcess[processId] = list;
+  lines = [...lines.slice(0, idx), { ...line, mixingProfilesByProcess: byProcess }, ...lines.slice(idx + 1)];
+  persist();
+  const profiles = getMixingProfiles(lineId, processId);
+  const p = profiles.find((mp) => mp.id === profileId);
+  return p?.processTimes?.find((e) => e.id === processTimeId) ?? null;
+}
+
+export function deleteProcessTimeFromProfile(lineId, processId, profileId, processTimeId) {
+  const idx = lines.findIndex((l) => l.id === lineId);
+  if (idx === -1) return;
+  const line = lines[idx];
+  const byProcess = { ...(line.mixingProfilesByProcess || {}) };
+  const list = (byProcess[processId] || []).map((mp) => mp.id === profileId ? { ...mp, processTimes: (mp.processTimes || []).filter((e) => e.id !== processTimeId) } : mp);
+  byProcess[processId] = list;
+  lines = [...lines.slice(0, idx), { ...line, mixingProfilesByProcess: byProcess }, ...lines.slice(idx + 1)];
+  persist();
 }
 
 export { LINES_STORAGE_KEY, LOAF_SECTION_IDS };

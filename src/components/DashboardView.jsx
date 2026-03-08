@@ -23,7 +23,7 @@ export default function DashboardView() {
   }, [rows, planDate]);
 
   const handleExportCSV = useCallback(() => {
-    const headers = ['product', 'soQty', 'theorOutput', 'capacity', 'procTime', 'startSponge', 'endDough', 'endBatch', 'batch'];
+    const headers = ['product', 'soQty', 'soCoExcess', 'exchangeForLoss', 'excess', 'samples', 'carryOverExcess', 'theorExcess', 'theorOutput', 'capacity', 'procTime', 'startSponge', 'endDough', 'endBatch', 'batch'];
     const line = (r) => headers.map((h) => r[h] ?? '').join(',');
     const csv = [headers.join(','), ...rows.map(line)].join('\n');
     const blob = new Blob([csv], { type: 'text/csv' });

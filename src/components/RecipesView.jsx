@@ -9,32 +9,29 @@ import {
   updateRecipe,
   deleteRecipe,
 } from '../store/recipeStore';
-import { getLines, getProcessesForLine } from '../store/productionLinesStore';
+import { getLines, getProcessesForLine, getMixingProfiles, getProfileTotalMinutes } from '../store/productionLinesStore';
 
 export default function RecipesView() {
-  const [selectedLineId, setSelectedLineId] = useState(() => getLines()[0]?.id ?? '');
-  const [recipes, setRecipesState] = useState(() => getRecipesForLine(getLines()[0]?.id ?? ''));
+  const [selectedLineId, setSelectedLineId] = useState(''); // '' = All lines
+  const allRecipes = getRecipes();
+  const recipes = selectedLineId ? getRecipesForLine(selectedLineId) : allRecipes;
+  const lines = getLines();
+  const processesForColumns = selectedLineId
+    ? getProcessesForLine(selectedLineId)
+    : (lines[0] ? getProcessesForLine(lines[0].id) : []);
+
   const [editingId, setEditingId] = useState(null);
   const [draft, setDraft] = useState(null);
   const [addOpen, setAddOpen] = useState(false);
   const [addDraft, setAddDraft] = useState({
     name: '',
+    productionLineId: lines[0]?.id ?? '',
     processDurations: {},
   });
   const [deleteConfirmId, setDeleteConfirmId] = useState(null);
-  const [newRecipeName, setNewRecipeName] = useState('');
-  const [newRecipeDurations, setNewRecipeDurations] = useState({});
+  const [, setRefreshTick] = useState(0);
 
-  const lines = getLines();
-  const processes = selectedLineId ? getProcessesForLine(selectedLineId) : [];
-
-  const refresh = useCallback(() => {
-    setRecipesState(getRecipesForLine(selectedLineId));
-  }, [selectedLineId]);
-
-  useEffect(() => {
-    setRecipesState(getRecipesForLine(selectedLineId));
-  }, [selectedLineId]);
+  const refresh = useCallback(() => setRefreshTick((t) => t + 1), []);
 
   const startEdit = useCallback((recipe) => {
     setEditingId(recipe.id);
@@ -42,7 +39,12 @@ export default function RecipesView() {
   }, []);
 
   const updateDraftField = useCallback((field, value) => {
-    setDraft((prev) => (prev ? { ...prev, [field]: value } : null));
+    setDraft((prev) => {
+      if (!prev) return prev;
+      const next = { ...prev, [field]: value };
+      if (field === 'productionLineId') next.processDurations = {};
+      return next;
+    });
   }, []);
 
   const updateDraftProcessDuration = useCallback((processId, value) => {
@@ -55,7 +57,7 @@ export default function RecipesView() {
 
   const saveEdit = useCallback(() => {
     if (!draft) return;
-    updateRecipe(draft.id, { name: draft.name, processDurations: draft.processDurations });
+    updateRecipe(draft.id, { name: draft.name, productionLineId: draft.productionLineId, processDurations: draft.processDurations });
     refresh();
     setEditingId(null);
     setDraft(null);
@@ -68,9 +70,10 @@ export default function RecipesView() {
 
   const handleAdd = useCallback(() => {
     if (!addDraft.name?.trim()) return;
+    const lineId = addDraft.productionLineId || lines[0]?.id;
     const toAdd = {
       name: addDraft.name.trim(),
-      productionLineId: selectedLineId || undefined,
+      productionLineId: lineId || undefined,
       processDurations: addDraft.processDurations && Object.keys(addDraft.processDurations).length
         ? addDraft.processDurations
         : {},
@@ -78,8 +81,8 @@ export default function RecipesView() {
     addRecipe(toAdd);
     refresh();
     setAddOpen(false);
-    setAddDraft({ name: '', processDurations: {} });
-  }, [addDraft, selectedLineId, refresh]);
+    setAddDraft({ name: '', productionLineId: lines[0]?.id ?? '', processDurations: {} });
+  }, [addDraft, lines, refresh]);
 
   const handleDelete = useCallback((id) => {
     deleteRecipe(id);
@@ -87,18 +90,6 @@ export default function RecipesView() {
     setDeleteConfirmId(null);
     if (editingId === id) cancelEdit();
   }, [refresh, editingId, cancelEdit]);
-
-  const handleAddInline = useCallback(() => {
-    if (!newRecipeName.trim() || !selectedLineId) return;
-    addRecipe({
-      name: newRecipeName.trim(),
-      productionLineId: selectedLineId,
-      processDurations: { ...newRecipeDurations },
-    });
-    setNewRecipeName('');
-    setNewRecipeDurations({});
-    refresh();
-  }, [newRecipeName, selectedLineId, newRecipeDurations, refresh]);
 
   const containerClass = 'p-4 sm:p-6 flex flex-col gap-4 sm:gap-6 max-w-[1600px] xl:max-w-[1920px] 2xl:max-w-[2200px] mx-auto w-full min-w-0';
 
@@ -132,9 +123,9 @@ export default function RecipesView() {
                     value={selectedLineId}
                     onChange={(e) => setSelectedLineId(e.target.value)}
                     className="border border-gray-300 rounded-lg px-2 py-1.5 text-inherit text-xs sm:text-sm md:text-base max-w-[200px] w-full bg-transparent font-semibold"
-                    aria-label="Production line"
+                    aria-label="Production line filter"
                   >
-                    <option value="">— Select production line —</option>
+                    <option value="">All</option>
                     {lines.map((line) => (
                       <option key={line.id} value={line.id}>{line.name}</option>
                     ))}
@@ -143,7 +134,7 @@ export default function RecipesView() {
                 <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 whitespace-nowrap bg-surface-card-warm">
                   Product name
                 </th>
-                {processes.map((proc) => (
+                {processesForColumns.map((proc) => (
                   <th key={proc.id} className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 whitespace-nowrap bg-surface-card-warm">
                     {proc.name}
                   </th>
@@ -155,48 +146,13 @@ export default function RecipesView() {
               </tr>
             </thead>
             <tbody>
-              <tr className="sticky top-12 z-10 border-b border-gray-200 bg-gray-50/95 backdrop-blur-sm shadow-[0_1px_0_0_rgba(0,0,0,0.06)]">
-                <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-700 text-xs sm:text-sm">
-                  {selectedLineId ? (lines.find((l) => l.id === selectedLineId)?.name ?? '—') : '—'}
-                </td>
-                <td className="py-2 sm:py-2.5 px-2 sm:px-4">
-                  <input
-                    type="text"
-                    value={newRecipeName}
-                    onChange={(e) => setNewRecipeName(e.target.value)}
-                    placeholder="Product name"
-                    className="border border-gray-300 rounded-lg px-2 py-1 w-full min-w-[120px] text-inherit"
-                  />
-                </td>
-                {processes.map((proc) => (
-                  <td key={proc.id} className="py-2 sm:py-2.5 px-2 sm:px-4">
-                    <input
-                      type="number"
-                      min={0}
-                      value={newRecipeDurations[proc.id] ?? ''}
-                      onChange={(e) => setNewRecipeDurations((p) => ({ ...p, [proc.id]: Number(e.target.value) || 0 }))}
-                      className="border border-gray-300 rounded px-2 py-1 w-full max-w-[80px] text-inherit"
-                    />
-                  </td>
-                ))}
-                <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-500 text-xs">—</td>
-                <td className="py-2 sm:py-2.5 px-2 sm:px-4">
-                  <button
-                    type="button"
-                    onClick={handleAddInline}
-                    disabled={!newRecipeName.trim() || !selectedLineId}
-                    className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-primary text-white text-xs font-medium disabled:opacity-50"
-                  >
-                    <Plus className="w-4 h-4" /> Add
-                  </button>
-                </td>
-              </tr>
               {recipes.map((recipe) => {
                 const isEditing = editingId === recipe.id;
                 const r = isEditing && draft ? draft : recipe;
                 const pd = r.processDurations || {};
-                const displayTotal = selectedLineId && processes.length > 0
-                  ? processes.reduce((s, p) => s + (Number((isEditing && draft ? draft.processDurations : pd)[p.id]) || 0), 0)
+                const editLineId = (isEditing && draft && draft.productionLineId) ? draft.productionLineId : recipe.productionLineId;
+                const displayTotal = processesForColumns.length > 0
+                  ? processesForColumns.reduce((s, p) => s + (Number((isEditing && draft ? draft.processDurations : pd)[p.id]) || 0), 0)
                   : (isEditing && draft
                     ? (draft.mixing || 0) + (draft.makeupDividing || 0) + (draft.makeupPanning || 0) + (draft.baking || 0) + (draft.packaging || 0)
                     : getTotalProcessMinutes(recipe.name));
@@ -209,7 +165,19 @@ export default function RecipesView() {
                     className={`border-b border-gray-100 ${isEditing ? 'bg-primary/5 ring-1 ring-primary/30' : 'hover:bg-gray-50/50'}`}
                   >
                     <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-600 text-xs sm:text-sm">
-                      {selectedLineId ? lines.find((l) => l.id === selectedLineId)?.name ?? '—' : '—'}
+                      {isEditing ? (
+                        <select
+                          value={r.productionLineId ?? ''}
+                          onChange={(e) => updateDraftField('productionLineId', e.target.value)}
+                          className="border border-gray-300 rounded px-2 py-1 text-gray-900 bg-white text-inherit min-w-[120px]"
+                        >
+                          {lines.map((l) => (
+                            <option key={l.id} value={l.id}>{l.name}</option>
+                          ))}
+                        </select>
+                      ) : (
+                        (selectedLineId ? lines.find((l) => l.id === selectedLineId)?.name : lines.find((l) => l.id === recipe.productionLineId)?.name) ?? '—'
+                      )}
                     </td>
                     <td className="py-2 sm:py-2.5 px-2 sm:px-4">
                       <input
@@ -220,18 +188,47 @@ export default function RecipesView() {
                         className={isEditing ? 'border border-gray-300 rounded px-2 py-1 text-gray-900 bg-white min-w-[120px] sm:min-w-[140px] text-inherit' : 'border border-gray-200 rounded px-2 py-1 text-gray-700 bg-gray-50 min-w-[120px] sm:min-w-[140px] cursor-not-allowed text-inherit'}
                       />
                     </td>
-                    {processes.map((proc) => (
-                      <td key={proc.id} className="py-2 sm:py-2.5 px-2 sm:px-4">
-                        <input
-                          type="number"
-                          min={0}
-                          value={pd[proc.id] ?? ''}
-                          onChange={(e) => updateDraftProcessDuration(proc.id, e.target.value)}
-                          disabled={!isEditing}
-                          className={inputClass}
-                        />
-                      </td>
-                    ))}
+                    {processesForColumns.map((proc) => {
+                      const editProfiles = isEditing && editLineId ? getMixingProfiles(editLineId, proc.id) : [];
+                      const currentMins = Number(pd[proc.id]) || 0;
+                      const hasExplicitProfile = editProfiles.some((p) => getProfileTotalMinutes(editLineId, proc.id, p.id) === currentMins);
+                      const selectedProfileId = hasExplicitProfile
+                        ? (editProfiles.find((p) => getProfileTotalMinutes(editLineId, proc.id, p.id) === currentMins)?.id ?? '')
+                        : '';
+                      return (
+                        <td key={proc.id} className="py-2 sm:py-2.5 px-2 sm:px-4">
+                          {isEditing && editProfiles.length > 0 ? (
+                            <select
+                              value={selectedProfileId}
+                              onChange={(e) => {
+                                const pid = e.target.value;
+                                const mins = pid ? getProfileTotalMinutes(editLineId, proc.id, pid) : 0;
+                                updateDraftProcessDuration(proc.id, mins);
+                              }}
+                              className={inputClass.replace('cursor-not-allowed', '')}
+                            >
+                              <option value="">— Select —</option>
+                              {editProfiles.map((p) => (
+                                <option key={p.id} value={p.id}>
+                                  {getProfileTotalMinutes(editLineId, proc.id, p.id)} min
+                                </option>
+                              ))}
+                            </select>
+                          ) : isEditing && editProfiles.length === 0 ? (
+                            <span className="text-gray-500 text-xs sm:text-sm">N/A</span>
+                          ) : (
+                            <input
+                              type="number"
+                              min={0}
+                              value={pd[proc.id] ?? ''}
+                              onChange={(e) => updateDraftProcessDuration(proc.id, e.target.value)}
+                              disabled={!isEditing}
+                              className={inputClass}
+                            />
+                          )}
+                        </td>
+                      );
+                    })}
                     <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-700 tabular-nums select-none">{displayTotal}</td>
                     <td className="py-2 sm:py-2.5 px-2 sm:px-4">
                       <div className="flex items-center gap-1">
@@ -291,6 +288,20 @@ export default function RecipesView() {
           <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-full max-w-md -translate-x-1/2 -translate-y-1/2 rounded-lg border border-gray-200 bg-white p-4 sm:p-6 shadow-lg max-h-[90vh] overflow-y-auto">
             <Dialog.Title className="text-base sm:text-lg font-semibold text-gray-900">Add recipe</Dialog.Title>
             <div className="mt-4 space-y-3">
+              <label className="block text-xs sm:text-sm font-medium text-gray-700">Production line</label>
+              <select
+                value={addDraft.productionLineId ?? ''}
+                onChange={(e) => setAddDraft((p) => ({
+                  ...p,
+                  productionLineId: (e.target.value || lines[0]?.id) ?? '',
+                  processDurations: {},
+                }))}
+                className="w-full border border-gray-300 rounded px-3 py-2 text-gray-900 text-sm sm:text-base bg-white"
+              >
+                {lines.map((l) => (
+                  <option key={l.id} value={l.id}>{l.name}</option>
+                ))}
+              </select>
               <label className="block text-xs sm:text-sm font-medium text-gray-700">Product name</label>
               <input
                 type="text"
@@ -299,26 +310,57 @@ export default function RecipesView() {
                 className="w-full border border-gray-300 rounded px-3 py-2 text-gray-900 text-sm sm:text-base"
                 placeholder="e.g. Everyday Bread 8s"
               />
-              {selectedLineId && processes.length > 0 && (
-                <>
-                  <span className="block text-xs sm:text-sm font-medium text-gray-700 mt-3">Process durations (mins)</span>
-                  {processes.map((proc) => (
-                    <div key={proc.id}>
-                      <label className="block text-xs sm:text-sm font-medium text-gray-700">{proc.name}</label>
-                      <input
-                        type="number"
-                        min={0}
-                        value={addDraft.processDurations[proc.id] ?? ''}
-                        onChange={(e) => setAddDraft((p) => ({
-                          ...p,
-                          processDurations: { ...(p.processDurations || {}), [proc.id]: Number(e.target.value) || 0 },
-                        }))}
-                        className="w-full border border-gray-300 rounded px-3 py-2 text-gray-900 text-sm"
-                      />
-                    </div>
-                  ))}
-                </>
-              )}
+              {addDraft.productionLineId && (() => {
+                const addLineProcs = getProcessesForLine(addDraft.productionLineId);
+                return addLineProcs.length > 0 ? (
+                  <>
+                    <span className="block text-xs sm:text-sm font-medium text-gray-700 mt-3">Process profile (sets duration in mins)</span>
+                    {addLineProcs.map((proc) => {
+                      const profiles = getMixingProfiles(addDraft.productionLineId, proc.id);
+                      const hasValue = addDraft.processDurations && Object.prototype.hasOwnProperty.call(addDraft.processDurations, proc.id);
+                      const currentMins = hasValue ? Number(addDraft.processDurations[proc.id]) : null;
+                      const selectedProfileId = hasValue && currentMins != null
+                        ? (profiles.find((p) => getProfileTotalMinutes(addDraft.productionLineId, proc.id, p.id) === currentMins)?.id ?? '')
+                        : '';
+                      if (profiles.length === 0) {
+                        return (
+                          <div key={proc.id}>
+                            <label className="block text-xs sm:text-sm font-medium text-gray-700">{proc.name}</label>
+                            <div className="w-full border border-gray-200 rounded px-3 py-2 text-gray-500 text-sm bg-gray-50">
+                              N/A
+                            </div>
+                            <p className="text-[0.65rem] sm:text-xs text-gray-400 mt-0.5">No process profile added yet for this process.</p>
+                          </div>
+                        );
+                      }
+                      return (
+                        <div key={proc.id}>
+                          <label className="block text-xs sm:text-sm font-medium text-gray-700">{proc.name}</label>
+                          <select
+                            value={selectedProfileId}
+                            onChange={(e) => {
+                              const pid = e.target.value;
+                              const mins = pid ? getProfileTotalMinutes(addDraft.productionLineId, proc.id, pid) : 0;
+                              setAddDraft((p) => ({
+                                ...p,
+                                processDurations: { ...(p.processDurations || {}), [proc.id]: mins },
+                              }));
+                            }}
+                            className="w-full border border-gray-300 rounded px-3 py-2 text-gray-900 text-sm bg-white"
+                          >
+                            <option value="">— Select —</option>
+                            {profiles.map((p) => (
+                              <option key={p.id} value={p.id}>
+                                {getProfileTotalMinutes(addDraft.productionLineId, proc.id, p.id)} min
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      );
+                    })}
+                  </>
+                ) : null;
+              })()}
             </div>
             <div className="mt-6 flex justify-end gap-2">
               <Dialog.Close asChild>

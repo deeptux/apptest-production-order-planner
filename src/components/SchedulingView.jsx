@@ -1,10 +1,12 @@
-import { useState, useCallback } from 'react';
-import { Plus, Trash2, Pencil, Check, X } from 'lucide-react';
+import { useState, useCallback, useRef, useEffect } from 'react';
+import { Plus, Trash2, Pencil } from 'lucide-react';
 import * as Dialog from '@radix-ui/react-dialog';
+import * as Tooltip from '@radix-ui/react-tooltip';
 import { usePlan } from '../context/PlanContext';
+import { computeTheoreticalOutput } from '../store/planStore';
 import { recomputeEndTimesForRow } from '../utils/stageDurations';
 import { getRecipesForLine, getTotalProcessMinutes, getTotalProcessMinutesForLine } from '../store/recipeStore';
-import { getCapacityForProduct } from '../store/capacityProfileStore';
+import { getCapacityForProduct, getDoughWeightKgForProduct, getGramsPerUnitForProduct, getTotalDoughWeightKgForProduct } from '../store/capacityProfileStore';
 import { getLines, getLineById } from '../store/productionLinesStore';
 
 const FIELDS_THAT_TRIGGER_AUTO_ADJUST = ['startSponge', 'product'];
@@ -13,10 +15,20 @@ export default function SchedulingView() {
   const { planDate, setPlanDate, rows, setRows, reorderRows, addBatch, deleteBatch } = usePlan();
   const [editingRowId, setEditingRowId] = useState(null);
   const [draftRow, setDraftRow] = useState(null);
-  const [confirmOpen, setConfirmOpen] = useState(false);
   const [selectedLineId, setSelectedLineId] = useState('all');
   const [showAllDates, setShowAllDates] = useState(false);
+  const [hoveredRowId, setHoveredRowId] = useState(null);
+  const [clickedRowId, setClickedRowId] = useState(null);
+  const clickTimeoutRef = useRef(null);
+  const hoverTimeoutRef = useRef(null);
   const lines = getLines();
+
+  useEffect(() => {
+    return () => {
+      if (clickTimeoutRef.current) clearTimeout(clickTimeoutRef.current);
+      if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
+    };
+  }, []);
 
   const formatDateInput = (d) => {
     if (!d || !(d instanceof Date)) return '';
@@ -48,6 +60,13 @@ export default function SchedulingView() {
     const lineId = row.productionLineId || lineIdForNewBatch || getLines()[0]?.id;
     const draft = { ...row, productionLineId: lineId };
     draft.date = row.date ?? '';
+    draft.soCoExcess = row.soCoExcess !== undefined ? row.soCoExcess : (row.soQty ?? 0);
+    draft.exchangeForLoss = row.exchangeForLoss !== undefined ? row.exchangeForLoss : 0;
+    draft.excess = row.excess !== undefined ? row.excess : 0;
+    draft.samples = row.samples !== undefined ? row.samples : 2;
+    draft.carryOverExcess = row.carryOverExcess !== undefined ? row.carryOverExcess : 0;
+    draft.theorExcess = row.theorExcess !== undefined ? row.theorExcess : 0;
+    draft.theorOutputOverride = row.theorOutputOverride !== undefined ? row.theorOutputOverride : '';
     draft.capacity = getCapacityForProduct(row.product, lineId) ?? row.capacity;
     draft.procTime = getTotalProcessMinutesForLine(row.product, lineId) || getTotalProcessMinutes(row.product) || row.procTime;
     const { endDough, endBatch } = recomputeEndTimesForRow(draft);
@@ -83,12 +102,11 @@ export default function SchedulingView() {
     });
   }, [lineIdForNewBatch]);
 
-  const openConfirmModal = useCallback(() => {
-    if (editingRowId && draftRow) setConfirmOpen(true);
-  }, [editingRowId, draftRow]);
+  const openEditModal = useCallback((row) => {
+    startEditing(row);
+  }, [startEditing]);
 
   const cancelEdit = useCallback(() => {
-    setConfirmOpen(false);
     setEditingRowId(null);
     setDraftRow(null);
   }, []);
@@ -100,7 +118,6 @@ export default function SchedulingView() {
     setRows((prev) =>
       prev.map((r) => (r.id === toSave.id ? { ...toSave } : r))
     );
-    setConfirmOpen(false);
     setEditingRowId(null);
     setDraftRow(null);
   }, [draftRow, lineIdForNewBatch, setRows]);
@@ -122,7 +139,6 @@ export default function SchedulingView() {
   };
 
   const isEditing = (rowId) => editingRowId === rowId;
-  const displayRow = (row) => (isEditing(row.id) && draftRow ? draftRow : row);
 
   return (
     <div className="p-4 sm:p-6 flex flex-col gap-6 max-w-[1600px] xl:max-w-[1920px] 2xl:max-w-[2200px] mx-auto w-full min-w-0">
@@ -190,42 +206,78 @@ export default function SchedulingView() {
             Add batch
           </button>
         </div>
-        <div className="overflow-x-auto">
-          <table className="w-full border-collapse text-xs sm:text-sm md:text-base 2xl:text-lg">
+        <div className="overflow-x-auto min-w-0">
+          <Tooltip.Provider delayDuration={300}>
+          <table className="w-full border-collapse text-xs sm:text-sm md:text-base lg:text-lg xl:text-xl 2xl:text-2xl min-w-[800px]">
             <thead>
               <tr className="bg-surface-card-warm border-b border-gray-200">
-                <th className="text-left py-2 sm:py-3 px-3 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap">Order</th>
-                <th className="text-left py-2 sm:py-3 px-3 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap">Production line</th>
-                <th className="text-left py-2 sm:py-3 px-3 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap">Date</th>
-                <th className="text-left py-2 sm:py-3 px-3 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap">Product</th>
-                <th className="text-left py-2 sm:py-3 px-3 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap">SO Qty</th>
-                <th className="text-left py-2 sm:py-3 px-3 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap">Theor. Output</th>
-                <th className="text-left py-2 sm:py-3 px-3 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap">Capacity</th>
-                <th className="text-left py-2 sm:py-3 px-3 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap">Proc.Time</th>
-                <th className="text-left py-2 sm:py-3 px-3 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap">Start Sponge</th>
-                <th className="text-left py-2 sm:py-3 px-3 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap">End Dough</th>
-                <th className="text-left py-2 sm:py-3 px-3 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap">End Batch</th>
-                <th className="text-left py-2 sm:py-3 px-3 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap">Batch</th>
-                <th className="text-left py-2 sm:py-3 px-3 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap w-12">Actions</th>
+                <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap">Order</th>
+                <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap w-10 sm:w-12">Actions</th>
+                <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[4rem]">Line</th>
+                <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[5rem]">Date</th>
+                <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[6rem]">Product</th>
+                <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[5rem]">Sales Order (SO) Qty</th>
+                <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[4rem]">Process Time</th>
+                <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[4rem]">Start Sponge</th>
+                <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[4rem]">End Dough</th>
+                <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[4rem]">End Batch</th>
+                <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[3rem]">Batch</th>
               </tr>
             </thead>
             <tbody>
               {displayedRows.map((row, index) => {
-                const editing = isEditing(row.id);
-                const r = displayRow(row);
-                const lineId = r.productionLineId || selectedLineId;
-                const displayCapacity = editing ? (r.capacity ?? '') : (getCapacityForProduct(row.product, row.productionLineId) ?? row.capacity ?? '');
-                const displayProcTime = editing ? (r.procTime ?? '') : (getTotalProcessMinutesForLine(row.product, row.productionLineId) || getTotalProcessMinutes(row.product) || row.procTime || '');
-                const editRecipeOptions = lineId ? getRecipesForLine(lineId) : [];
-                const inputClass = editing
-                  ? 'border border-gray-300 rounded px-2 py-1 text-gray-900 bg-white'
-                  : 'border border-gray-200 rounded px-2 py-1 text-gray-700 bg-gray-50 cursor-not-allowed';
+                const displayProcTime = getTotalProcessMinutesForLine(row.product, row.productionLineId) || getTotalProcessMinutes(row.product) || row.procTime || '';
+                const capacityDisplay = getCapacityForProduct(row.product, row.productionLineId) ?? row.capacity ?? '—';
+                const doughDisplay = getDoughWeightKgForProduct(row.product, row.productionLineId) != null ? `${getDoughWeightKgForProduct(row.product, row.productionLineId)} kg` : '—';
+                const totalDoughKg = getTotalDoughWeightKgForProduct(row.product, row.productionLineId);
+                const gramsPerUnit = getGramsPerUnitForProduct(row.product, row.productionLineId);
+                const totalGramsDisplay = totalDoughKg != null && !Number.isNaN(totalDoughKg) ? (totalDoughKg * 1000).toLocaleString('en-US', { maximumFractionDigits: 0 }) : '—';
+                const tooltipContent = (
+                  <div className="text-left text-xs sm:text-sm space-y-1 p-1 max-w-[280px]">
+                    <div><span className="font-medium text-gray-500">Sales Order (SO) Qty:</span> {row.soQty ?? '—'}</div>
+                    <div><span className="font-medium text-gray-500">SO-CO Excess:</span> {row.soCoExcess ?? '—'}</div>
+                    <div><span className="font-medium text-gray-500">Exchange Loss:</span> {row.exchangeForLoss ?? '—'}</div>
+                    <div><span className="font-medium text-gray-500">Excess:</span> {row.excess ?? '—'}</div>
+                    <div><span className="font-medium text-gray-500">Samples:</span> {row.samples ?? '—'}</div>
+                    <div><span className="font-medium text-gray-500">Carry Over:</span> {row.carryOverExcess ?? '—'}</div>
+                    <div><span className="font-medium text-gray-500">Theoretical Excess:</span> {row.theorExcess ?? '—'}</div>
+                    <div><span className="font-medium text-gray-500">Theoretical Output:</span> {row.theorOutput ?? '—'}</div>
+                    <div><span className="font-medium text-gray-500">Capacity:</span> {capacityDisplay}</div>
+                    <div><span className="font-medium text-gray-500">Dough (kg):</span> {doughDisplay}</div>
+                    <div><span className="font-medium text-gray-500">Total dough (kg):</span> {totalDoughKg != null ? `${totalDoughKg} kg` : '—'}</div>
+                    <div><span className="font-medium text-gray-500">Grams:</span> {gramsPerUnit != null ? gramsPerUnit : '—'}</div>
+                    <div><span className="font-medium text-gray-500">Total grams:</span> {totalGramsDisplay}</div>
+                  </div>
+                );
                 return (
-                  <tr
+                  <Tooltip.Root
                     key={row.id}
-                    className={`border-b border-gray-100 bg-surface-card ${editing ? 'ring-1 ring-primary/30 bg-primary/5' : 'hover:bg-gray-50/50'}`}
+                    delayDuration={300}
+                    open={hoveredRowId === row.id || clickedRowId === row.id}
                   >
-                    <td className="py-2 sm:py-2.5 px-3 sm:px-4">
+                    <Tooltip.Trigger asChild>
+                  <tr
+                    className={`border-b border-gray-100 bg-surface-card hover:bg-gray-50/50 whitespace-nowrap ${clickedRowId === row.id ? 'bg-blue-50/80 ring-1 ring-blue-200 ring-inset' : ''}`}
+                    onPointerEnter={() => {
+                      if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
+                      hoverTimeoutRef.current = setTimeout(() => setHoveredRowId(row.id), 300);
+                    }}
+                    onPointerLeave={() => {
+                      if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
+                      hoverTimeoutRef.current = null;
+                      setHoveredRowId(null);
+                    }}
+                    onClick={(e) => {
+                      if (e.target.closest('button')) return;
+                      if (clickTimeoutRef.current) clearTimeout(clickTimeoutRef.current);
+                      setClickedRowId(row.id);
+                      clickTimeoutRef.current = setTimeout(() => {
+                        setClickedRowId(null);
+                        if (document.activeElement && typeof document.activeElement.blur === 'function') document.activeElement.blur();
+                      }, 4000);
+                    }}
+                  >
+                    <td className="py-2 sm:py-2.5 px-2 sm:px-4">
                       <div className="flex gap-1">
                         <button
                           type="button"
@@ -247,214 +299,162 @@ export default function SchedulingView() {
                         </button>
                       </div>
                     </td>
-                    <td className="py-2 sm:py-2.5 px-3 sm:px-4">
-                      {editing ? (
-                        <select
-                          value={r.productionLineId ?? ''}
-                          onChange={(e) => updateDraft('productionLineId', e.target.value)}
-                          className="w-full max-w-[160px] border border-gray-300 rounded px-2 py-1 text-gray-900 bg-white text-inherit"
-                        >
-                          {lines.map((line) => (
-                            <option key={line.id} value={line.id}>{line.name}</option>
-                          ))}
-                        </select>
-                      ) : (
-                        <span className="text-gray-700 text-inherit">{getLineById(r.productionLineId)?.name ?? '—'}</span>
-                      )}
-                    </td>
-                    <td className="py-2 sm:py-2.5 px-3 sm:px-4">
-                      {editing ? (
-                        <input
-                          type="date"
-                          value={r.date ?? ''}
-                          onChange={(e) => updateDraft('date', e.target.value)}
-                          className="w-full max-w-[140px] border border-gray-300 rounded px-2 py-1 text-gray-900 bg-white text-inherit"
-                        />
-                      ) : (
-                        <span className="text-gray-700 text-inherit">{r.date ?? '—'}</span>
-                      )}
-                    </td>
-                    <td className="py-2 sm:py-2.5 px-3 sm:px-4">
-                      {editing ? (
-                        <select
-                          value={r.product ?? ''}
-                          onChange={(e) => updateDraft('product', e.target.value)}
-                          className="w-full max-w-[180px] border border-gray-300 rounded px-2 py-1 text-gray-900 bg-white text-inherit"
-                        >
-                          <option value="">— Select product —</option>
-                          {editRecipeOptions.map((rec) => (
-                            <option key={rec.id} value={rec.name}>{rec.name}</option>
-                          ))}
-                        </select>
-                      ) : (
-                        <span className="text-gray-800 text-inherit">{r.product ?? '—'}</span>
-                      )}
-                    </td>
-                    <td className="py-2 sm:py-2.5 px-3 sm:px-4">
-                      <input
-                        type="number"
-                        value={r.soQty ?? ''}
-                        onChange={(e) => updateDraft('soQty', Number(e.target.value) || 0)}
-                        disabled={!editing}
-                        className={`w-20 ${inputClass}`}
-                        readOnly={!editing}
-                      />
-                    </td>
-                    <td className="py-2 sm:py-2.5 px-3 sm:px-4">
-                      <input
-                        type="number"
-                        value={r.theorOutput ?? ''}
-                        onChange={(e) => updateDraft('theorOutput', Number(e.target.value) || 0)}
-                        disabled={!editing}
-                        className={`w-20 ${inputClass}`}
-                        readOnly={!editing}
-                      />
-                    </td>
-                    <td className="py-2 sm:py-2.5 px-3 sm:px-4">
-                      <input
-                        type="number"
-                        value={displayCapacity}
-                        readOnly
-                        disabled
-                        className="w-20 border border-gray-200 rounded px-2 py-1 text-gray-700 bg-gray-50 cursor-not-allowed"
-                        title="From capacity profile (read-only)"
-                      />
-                    </td>
-                    <td className="py-2 sm:py-2.5 px-3 sm:px-4">
-                      <input
-                        type="number"
-                        value={displayProcTime}
-                        readOnly
-                        disabled
-                        className="w-16 border border-gray-200 rounded px-2 py-1 text-gray-700 bg-gray-50 cursor-not-allowed"
-                        title="From recipe (read-only)"
-                      />
-                    </td>
-                    <td className="py-2 sm:py-2.5 px-3 sm:px-4">
-                      <input
-                        type="text"
-                        value={r.startSponge ?? ''}
-                        onChange={(e) => updateDraft('startSponge', e.target.value)}
-                        placeholder="HH:MM"
-                        disabled={!editing}
-                        className={`w-20 ${inputClass}`}
-                        readOnly={!editing}
-                      />
-                    </td>
-                    <td className="py-2 sm:py-2.5 px-3 sm:px-4">
-                      <input
-                        type="text"
-                        value={r.endDough ?? ''}
-                        readOnly
-                        disabled
-                        placeholder="HH:MM"
-                        className="w-20 border border-gray-200 rounded px-2 py-1 text-gray-700 bg-gray-50 cursor-not-allowed"
-                        title="Computed (read-only)"
-                      />
-                    </td>
-                    <td className="py-2 sm:py-2.5 px-3 sm:px-4">
-                      <input
-                        type="text"
-                        value={r.endBatch ?? ''}
-                        readOnly
-                        disabled
-                        placeholder="HH:MM"
-                        className="w-20 border border-gray-200 rounded px-2 py-1 text-gray-700 bg-gray-50 cursor-not-allowed"
-                        title="Computed (read-only)"
-                      />
-                    </td>
-                    <td className="py-2 sm:py-2.5 px-3 sm:px-4">
-                      <input
-                        type="text"
-                        value={r.batch ?? ''}
-                        readOnly
-                        disabled
-                        className="w-16 border border-gray-200 rounded px-2 py-1 text-gray-700 bg-gray-50 cursor-not-allowed"
-                        title="Derived (read-only)"
-                      />
-                    </td>
-                    <td className="py-2 sm:py-2.5 px-3 sm:px-4">
+                    <td className="py-2 sm:py-2.5 px-2 sm:px-4">
                       <div className="flex items-center gap-1">
-                        {editing ? (
-                          <button
-                            type="button"
-                            onClick={openConfirmModal}
-                            className="inline-flex items-center gap-1 px-2 py-1.5 rounded border border-primary bg-primary text-white text-xs font-medium hover:bg-primary-dark"
-                            aria-label="Confirm changes"
-                          >
-                            <Check className="w-4 h-4" />
-                            Confirm
-                          </button>
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={() => startEditing(row)}
-                            className="inline-flex items-center gap-1 px-2 py-1.5 rounded border border-gray-300 text-gray-700 text-xs font-medium hover:bg-gray-100"
-                            aria-label="Edit row"
-                          >
-                            <Pencil className="w-4 h-4" />
-                            Edit
-                          </button>
-                        )}
-                        {editing ? (
-                          <button
-                            type="button"
-                            onClick={cancelEdit}
-                            className="inline-flex items-center gap-1 px-2 py-1.5 rounded border border-gray-300 text-gray-700 text-xs font-medium hover:bg-gray-100"
-                            aria-label="Cancel edit"
-                          >
-                            <X className="w-4 h-4" />
-                            Cancel
-                          </button>
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={() => deleteBatch(row.id)}
-                            className="p-1.5 rounded border border-gray-300 hover:bg-red-50 hover:border-red-300 text-gray-600 hover:text-red-700 transition-colors"
-                            aria-label="Delete row"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        )}
+                        <button
+                          type="button"
+                          onClick={() => openEditModal(row)}
+                          className="p-1.5 rounded border border-gray-300 text-gray-700 hover:bg-gray-100 inline-flex items-center justify-center"
+                          aria-label="Edit row"
+                        >
+                          <Pencil className="w-4 h-4 sm:w-5 sm:h-5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => deleteBatch(row.id)}
+                          className="p-1.5 rounded border border-gray-300 hover:bg-red-50 hover:border-red-300 text-gray-600 hover:text-red-700 transition-colors inline-flex items-center justify-center"
+                          aria-label="Delete row"
+                        >
+                          <Trash2 className="w-4 h-4 sm:w-5 sm:h-5" />
+                        </button>
                       </div>
                     </td>
+                    <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-700 text-inherit">{getLineById(row.productionLineId)?.name ?? '—'}</td>
+                    <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-700 text-inherit">{row.date ?? '—'}</td>
+                    <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-800 text-inherit">{row.product ?? '—'}</td>
+                    <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-800 text-inherit">{row.soQty ?? '—'}</td>
+                    <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-700 text-inherit">{displayProcTime || '—'}</td>
+                    <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-700 text-inherit">{row.startSponge ?? '—'}</td>
+                    <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-700 text-inherit">{row.endDough ?? '—'}</td>
+                    <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-700 text-inherit">{row.endBatch ?? '—'}</td>
+                    <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-700 text-inherit">{row.batch ?? '—'}</td>
                   </tr>
+                    </Tooltip.Trigger>
+                    <Tooltip.Portal>
+                      <Tooltip.Content side="top" sideOffset={6} className="z-50 max-w-[90vw] rounded-lg border border-gray-200 bg-white px-3 py-2 shadow-lg text-gray-900">
+                        {tooltipContent}
+                      </Tooltip.Content>
+                    </Tooltip.Portal>
+                  </Tooltip.Root>
                 );
               })}
             </tbody>
           </table>
+          </Tooltip.Provider>
         </div>
         <p className="p-2 sm:p-3 text-xs sm:text-sm 2xl:text-base text-muted bg-surface-card-warm border-t border-gray-200">
-          Press Edit on a row to change it; press Confirm to save. Changes are reflected on the Dashboard after you confirm.
+          Click Edit on a row to open the edit modal and change all fields. Move rows with Order arrows.
         </p>
       </div>
 
-      <Dialog.Root open={confirmOpen} onOpenChange={(open) => !open && cancelEdit()}>
+      <Dialog.Root open={!!editingRowId && !!draftRow} onOpenChange={(open) => !open && cancelEdit()}>
         <Dialog.Portal>
           <Dialog.Overlay className="fixed inset-0 bg-black/50 z-40 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0" />
-          <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-full max-w-md -translate-x-1/2 -translate-y-1/2 rounded-lg border border-gray-200 bg-white p-6 shadow-lg">
-            <Dialog.Title className="text-lg font-semibold text-gray-900">
-              Save changes?
-            </Dialog.Title>
-            <Dialog.Description className="mt-2 text-sm text-gray-600">
-              Apply these changes to the production order and update the plan? This will sync to the Dashboard and other clients.
-            </Dialog.Description>
-            <div className="mt-6 flex justify-end gap-2">
+          <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-full max-w-lg max-h-[90vh] -translate-x-1/2 -translate-y-1/2 rounded-lg border border-gray-200 bg-white shadow-lg flex flex-col">
+            <div className="p-4 border-b border-gray-200">
+              <Dialog.Title className="text-lg font-semibold text-gray-900">Edit batch</Dialog.Title>
+              <Dialog.Description className="text-sm text-gray-600 mt-0.5">Change any field below. Theoretical Output is computed from formula or override.</Dialog.Description>
+            </div>
+            <div className="p-4 overflow-y-auto flex-1 grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
+              {draftRow && (() => {
+                const r = draftRow;
+                const lineId = r.productionLineId || lineIdForNewBatch;
+                const editRecipeOptions = lineId ? getRecipesForLine(lineId) : [];
+                const capacityVal = getCapacityForProduct(r.product, lineId) ?? r.capacity ?? '—';
+                const doughVal = getDoughWeightKgForProduct(r.product, lineId) != null ? `${getDoughWeightKgForProduct(r.product, lineId)} kg` : '—';
+                const procTimeVal = getTotalProcessMinutesForLine(r.product, lineId) || getTotalProcessMinutes(r.product) || r.procTime || '—';
+                return (
+                  <>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-0.5">Line</label>
+                      <select value={r.productionLineId ?? ''} onChange={(e) => updateDraft('productionLineId', e.target.value)} className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900">
+                        {lines.map((line) => <option key={line.id} value={line.id}>{line.name}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-0.5">Date</label>
+                      <input type="date" value={r.date ?? ''} onChange={(e) => updateDraft('date', e.target.value)} className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900" />
+                    </div>
+                    <div className="sm:col-span-2">
+                      <label className="block text-xs font-medium text-gray-600 mb-0.5">Product</label>
+                      <select value={r.product ?? ''} onChange={(e) => updateDraft('product', e.target.value)} className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900">
+                        <option value="">— Select product —</option>
+                        {editRecipeOptions.map((rec) => <option key={rec.id} value={rec.name}>{rec.name}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-0.5">Sales Order (SO) Qty</label>
+                      <input type="number" value={r.soQty ?? ''} onChange={(e) => updateDraft('soQty', Number(e.target.value) || 0)} className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900" />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-0.5">SO-CO Excess</label>
+                      <input type="number" value={r.soCoExcess ?? ''} onChange={(e) => updateDraft('soCoExcess', Number(e.target.value) || 0)} className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900" />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-0.5">Exchange Loss</label>
+                      <input type="number" value={r.exchangeForLoss ?? ''} onChange={(e) => updateDraft('exchangeForLoss', Number(e.target.value) || 0)} className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900" />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-0.5">Excess</label>
+                      <input type="number" value={r.excess ?? ''} onChange={(e) => updateDraft('excess', Number(e.target.value) || 0)} className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900" />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-0.5">Samples</label>
+                      <input type="number" value={r.samples ?? ''} onChange={(e) => updateDraft('samples', Number(e.target.value) || 0)} className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900" />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-0.5">Carry Over</label>
+                      <input type="number" value={r.carryOverExcess ?? ''} onChange={(e) => updateDraft('carryOverExcess', Number(e.target.value) || 0)} className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900" />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-0.5">Theoretical Excess</label>
+                      <input type="number" value={r.theorExcess ?? ''} onChange={(e) => updateDraft('theorExcess', Number(e.target.value) || 0)} className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900" />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-0.5">Theoretical Output (override)</label>
+                      <input type="number" value={r.theorOutputOverride !== undefined && r.theorOutputOverride !== '' ? r.theorOutputOverride : computeTheoreticalOutput(r)} onChange={(e) => updateDraft('theorOutputOverride', e.target.value === '' ? '' : e.target.value)} className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900" placeholder="Computed" />
+                      <span className="text-xs text-gray-500">Computed: {computeTheoreticalOutput(r)}</span>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-0.5">Capacity</label>
+                      <div className="w-full border border-gray-200 rounded px-2 py-1.5 bg-gray-50 text-gray-700">{capacityVal}</div>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-0.5">Dough (kg)</label>
+                      <div className="w-full border border-gray-200 rounded px-2 py-1.5 bg-gray-50 text-gray-700">{doughVal}</div>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-0.5">Process Time</label>
+                      <div className="w-full border border-gray-200 rounded px-2 py-1.5 bg-gray-50 text-gray-700">{procTimeVal}</div>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-0.5">Start Sponge</label>
+                      <input type="text" value={r.startSponge ?? ''} onChange={(e) => updateDraft('startSponge', e.target.value)} placeholder="HH:MM" className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900" />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-0.5">End Dough</label>
+                      <div className="w-full border border-gray-200 rounded px-2 py-1.5 bg-gray-50 text-gray-700">{r.endDough ?? '—'}</div>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-0.5">End Batch</label>
+                      <div className="w-full border border-gray-200 rounded px-2 py-1.5 bg-gray-50 text-gray-700">{r.endBatch ?? '—'}</div>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-0.5">Batch</label>
+                      <div className="w-full border border-gray-200 rounded px-2 py-1.5 bg-gray-50 text-gray-700">{r.batch ?? '—'}</div>
+                    </div>
+                  </>
+                );
+              })()}
+            </div>
+            <div className="p-4 border-t border-gray-200 flex justify-end gap-2">
               <Dialog.Close asChild>
-                <button
-                  type="button"
-                  onClick={cancelEdit}
-                  className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 text-sm font-medium hover:bg-gray-50"
-                >
+                <button type="button" onClick={cancelEdit} className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 text-sm font-medium hover:bg-gray-50">
                   Cancel
                 </button>
               </Dialog.Close>
-              <button
-                type="button"
-                onClick={confirmSave}
-                className="px-4 py-2 rounded-lg bg-primary text-white text-sm font-medium hover:bg-primary-dark"
-              >
-                Confirm
+              <button type="button" onClick={confirmSave} className="px-4 py-2 rounded-lg bg-primary text-white text-sm font-medium hover:bg-primary-dark">
+                Save
               </button>
             </div>
           </Dialog.Content>

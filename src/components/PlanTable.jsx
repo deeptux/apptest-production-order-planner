@@ -2,13 +2,20 @@ import { Plus, ArrowUpDown, Download, FileText, Eye, Trash2 } from 'lucide-react
 import { useMemo } from 'react';
 import { usePlan } from '../context/PlanContext';
 import { computeStageDurationsForRow } from '../utils/stageDurations';
-import { getCapacityForProduct } from '../store/capacityProfileStore';
+import { getCapacityForProduct, getDoughWeightKgForProduct } from '../store/capacityProfileStore';
 
 const MIXING_COLUMNS = [
   { key: 'product', label: 'Product' },
   { key: 'soQty', label: 'SO Qty' },
+  { key: 'soCoExcess', label: 'SO-CO Excess' },
+  { key: 'exchangeForLoss', label: 'Exch. Loss' },
+  { key: 'excess', label: 'Excess' },
+  { key: 'samples', label: 'Samples' },
+  { key: 'carryOverExcess', label: 'Carry Over' },
+  { key: 'theorExcess', label: 'Theor. Excess' },
   { key: 'theorOutput', label: 'Theor. Output' },
   { key: 'capacity', label: 'Capacity' },
+  { key: 'doughWeightKg', label: 'Dough (kg)' },
   { key: 'procTime', label: 'Proc.Time' },
   { key: 'startSponge', label: 'Start Sponge' },
   { key: 'endDough', label: 'End Dough' },
@@ -21,8 +28,15 @@ const SECTION_COLUMNS = {
   'makeup-dividing': [
     { key: 'product', label: 'Product' },
     { key: 'soQty', label: 'SO Qty' },
+    { key: 'soCoExcess', label: 'SO-CO Excess' },
+    { key: 'exchangeForLoss', label: 'Exch. Loss' },
+    { key: 'excess', label: 'Excess' },
+    { key: 'samples', label: 'Samples' },
+    { key: 'carryOverExcess', label: 'Carry Over' },
+    { key: 'theorExcess', label: 'Theor. Excess' },
     { key: 'theorOutput', label: 'Theor. Output' },
     { key: 'capacity', label: 'Capacity' },
+    { key: 'doughWeightKg', label: 'Dough (kg)' },
     { key: 'procTime', label: 'Proc.Time' },
     { key: 'startSponge', label: 'Start Dividing' },
     { key: 'endDough', label: 'End Dividing' },
@@ -32,8 +46,15 @@ const SECTION_COLUMNS = {
   'makeup-panning': [
     { key: 'product', label: 'Product' },
     { key: 'soQty', label: 'SO Qty' },
+    { key: 'soCoExcess', label: 'SO-CO Excess' },
+    { key: 'exchangeForLoss', label: 'Exch. Loss' },
+    { key: 'excess', label: 'Excess' },
+    { key: 'samples', label: 'Samples' },
+    { key: 'carryOverExcess', label: 'Carry Over' },
+    { key: 'theorExcess', label: 'Theor. Excess' },
     { key: 'theorOutput', label: 'Theor. Output' },
     { key: 'capacity', label: 'Capacity' },
+    { key: 'doughWeightKg', label: 'Dough (kg)' },
     { key: 'procTime', label: 'Proc.Time' },
     { key: 'startSponge', label: 'Start Panning' },
     { key: 'endDough', label: 'End Panning' },
@@ -43,8 +64,15 @@ const SECTION_COLUMNS = {
   baking: [
     { key: 'product', label: 'Product' },
     { key: 'soQty', label: 'SO Qty' },
+    { key: 'soCoExcess', label: 'SO-CO Excess' },
+    { key: 'exchangeForLoss', label: 'Exch. Loss' },
+    { key: 'excess', label: 'Excess' },
+    { key: 'samples', label: 'Samples' },
+    { key: 'carryOverExcess', label: 'Carry Over' },
+    { key: 'theorExcess', label: 'Theor. Excess' },
     { key: 'theorOutput', label: 'Theor. Output' },
     { key: 'capacity', label: 'Capacity' },
+    { key: 'doughWeightKg', label: 'Dough (kg)' },
     { key: 'procTime', label: 'Proc.Time' },
     { key: 'startSponge', label: 'Start Baking' },
     { key: 'endDough', label: 'End Baking' },
@@ -54,8 +82,15 @@ const SECTION_COLUMNS = {
   packaging: [
     { key: 'product', label: 'Product' },
     { key: 'soQty', label: 'SO Qty' },
+    { key: 'soCoExcess', label: 'SO-CO Excess' },
+    { key: 'exchangeForLoss', label: 'Exch. Loss' },
+    { key: 'excess', label: 'Excess' },
+    { key: 'samples', label: 'Samples' },
+    { key: 'carryOverExcess', label: 'Carry Over' },
+    { key: 'theorExcess', label: 'Theor. Excess' },
     { key: 'theorOutput', label: 'Theor. Output' },
     { key: 'capacity', label: 'Capacity' },
+    { key: 'doughWeightKg', label: 'Dough (kg)' },
     { key: 'procTime', label: 'Proc.Time' },
     { key: 'startSponge', label: 'Start Sponge' },
     { key: 'endDough', label: 'End Packaging' },
@@ -122,7 +157,9 @@ export default function PlanTable({ sectionId, onAddBatch, onDeleteBatch, onReor
                       ? getProcTimeForSection(row.id)
                       : key === 'capacity'
                         ? (getCapacityForProduct(row.product, row.productionLineId) ?? row[key] ?? '—')
-                        : row[key] ?? '—';
+                        : key === 'doughWeightKg'
+                          ? (getDoughWeightKgForProduct(row.product, row.productionLineId) != null ? `${getDoughWeightKgForProduct(row.product, row.productionLineId)} kg` : '—')
+                          : row[key] ?? '—';
                   return (
                     <td key={key} className="py-2 sm:py-2.5 px-3 sm:px-4 text-gray-800 text-inherit">
                       {value}
