@@ -3,6 +3,9 @@
  * Each line has: capacityProfile (Capacity Name + Product + capacity), processes (CRUD), equipment per process (CRUD).
  * Used by Production page; Scheduling/Dashboard resolve capacity via Loaf Line (see capacityProfileStore).
  */
+import { isSupabaseConfigured } from '../lib/supabase';
+import { updateConfig } from '../api/config';
+
 const LINES_STORAGE_KEY = 'loaf-production-lines';
 
 const LOAF_SECTION_IDS = ['mixing', 'makeup-dividing', 'makeup-panning', 'baking', 'packaging'];
@@ -141,6 +144,22 @@ function persist() {
   try {
     localStorage.setItem(LINES_STORAGE_KEY, JSON.stringify(lines));
   } catch (_) {}
+  if (isSupabaseConfigured()) {
+    // Fire-and-forget; latest lines are stored under config key "lines".
+    updateConfig('lines', { lines });
+  }
+}
+
+/** Hydrate production lines from Supabase config payload (array of raw line objects). */
+export function hydrateLinesFromApi(list) {
+  if (!Array.isArray(list) || list.length === 0) return;
+  lines = list.map((l) => normalizeLine(l));
+  persist();
+}
+
+/** Serialize current lines for pushing to Supabase config. */
+export function getLinesPayloadForApi() {
+  return lines.map((l) => normalizeLine(l));
 }
 
 export function getLines() {

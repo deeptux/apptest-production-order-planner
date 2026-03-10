@@ -39,6 +39,9 @@ export default function SchedulingView() {
   const [hoveredRowId, setHoveredRowId] = useState(null);
   const [clickedRowId, setClickedRowId] = useState(null);
   const [statusTick, setStatusTick] = useState(() => Date.now());
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [deleteTargetRow, setDeleteTargetRow] = useState(null);
+  const [deleteConfirmText, setDeleteConfirmText] = useState('');
   const clickTimeoutRef = useRef(null);
   const hoverTimeoutRef = useRef(null);
   const lines = getLines();
@@ -202,6 +205,18 @@ export default function SchedulingView() {
     setEditingRowId(null);
     setDraftRow(null);
   }, []);
+
+  const handleDeleteClick = useCallback((row) => {
+    const status = getProductionStatus(row, statusTick);
+    if (status === 'In Progress') {
+      setDeleteTargetRow(row);
+      setDeleteConfirmText('');
+      setDeleteConfirmOpen(true);
+      return;
+    }
+    const result = deleteBatch(row.id);
+    if (result && !result.success && result.error) showSnackbar?.(result.error);
+  }, [deleteBatch, showSnackbar, statusTick]);
 
   const confirmSave = useCallback(() => {
     if (!draftRow) return;
@@ -410,13 +425,9 @@ export default function SchedulingView() {
                         </button>
                         <button
                           type="button"
-                          onClick={() => {
-                            const result = deleteBatch(row.id);
-                            if (result && !result.success && result.error) showSnackbar?.(result.error);
-                          }}
-                          disabled={getProductionStatus(row, statusTick) === 'In Progress'}
-                          className="p-1.5 rounded border border-gray-300 hover:bg-red-50 hover:border-red-300 text-gray-600 hover:text-red-700 transition-colors inline-flex items-center justify-center disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent"
-                          aria-label={getProductionStatus(row, statusTick) === 'In Progress' ? 'Cannot delete batch in progress' : 'Delete row'}
+                          onClick={() => handleDeleteClick(row)}
+                          className="p-1.5 rounded border border-gray-300 hover:bg-red-50 hover:border-red-300 text-gray-600 hover:text-red-700 transition-colors inline-flex items-center justify-center"
+                          aria-label="Delete row"
                         >
                           <Trash2 className="w-4 h-4 sm:w-5 sm:h-5" />
                         </button>
@@ -844,6 +855,57 @@ export default function SchedulingView() {
                 className="px-4 py-2 rounded-lg bg-primary text-white text-sm font-medium hover:bg-primary-dark disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 Add batch
+              </button>
+            </div>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
+
+      <Dialog.Root open={deleteConfirmOpen} onOpenChange={setDeleteConfirmOpen}>
+        <Dialog.Portal>
+          <Dialog.Overlay className="fixed inset-0 bg-black/50 z-40 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0" />
+          <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-full max-w-md -translate-x-1/2 -translate-y-1/2 rounded-lg border border-gray-200 bg-white shadow-lg p-4">
+            <Dialog.Title className="text-lg font-semibold text-gray-900">Delete in-progress line?</Dialog.Title>
+            <Dialog.Description className="mt-2 text-sm text-gray-700">
+              This production order is currently <span className="font-semibold">In Progress</span>. Deleting it will cancel the remaining progress on this line in the schedule.
+              To confirm, type <span className="font-mono font-semibold">Delete to Cancel Progress Line</span> below, then click Delete.
+            </Dialog.Description>
+            <div className="mt-4">
+              <label className="block text-xs font-medium text-gray-600 mb-1">Confirmation phrase</label>
+              <input
+                type="text"
+                value={deleteConfirmText}
+                onChange={(e) => setDeleteConfirmText(e.target.value)}
+                className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900 text-sm"
+                placeholder="Delete to Cancel Progress Line"
+              />
+            </div>
+            <div className="mt-4 flex justify-end gap-2">
+              <Dialog.Close asChild>
+                <button
+                  type="button"
+                  className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 text-sm font-medium hover:bg-gray-50"
+                >
+                  Cancel
+                </button>
+              </Dialog.Close>
+              <button
+                type="button"
+                onClick={() => {
+                  if (!deleteTargetRow) return;
+                  if (deleteConfirmText !== 'Delete to Cancel Progress Line') return;
+                  const result = deleteBatch(deleteTargetRow.id);
+                  if (result && !result.success && result.error) {
+                    showSnackbar?.(result.error);
+                  }
+                  setDeleteConfirmOpen(false);
+                  setDeleteTargetRow(null);
+                  setDeleteConfirmText('');
+                }}
+                disabled={deleteConfirmText !== 'Delete to Cancel Progress Line'}
+                className="px-4 py-2 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Delete
               </button>
             </div>
           </Dialog.Content>

@@ -7,7 +7,6 @@ import { isSupabaseConfigured } from '../lib/supabase';
 import { getRecipesForLine, getTotalProcessMinutesForLine } from '../store/recipeStore';
 import { getCapacityForProductFromLine, getYieldForProductFromLine, getLines } from '../store/productionLinesStore';
 import { recomputeEndTimesForRow, parseTimeToMinutes } from '../utils/stageDurations';
-import { getProductionStatus } from '../utils/productionStatus';
 
 const PLAN_ROWS_STORAGE_KEY = 'loaf-plan-rows';
 
@@ -500,16 +499,14 @@ export function swapOrderBetweenRows(rowIdA, rowIdB) {
 }
 
 /**
- * Delete a batch by row id. Fails if the batch is In Progress.
+ * Delete a batch by row id.
  * @returns {{ success: boolean, error?: string }}
  */
 export function deleteBatch(rowId) {
-  const row = state.rows.find((r) => r.id === rowId);
-  if (!row) return { success: false, error: 'Row not found.' };
-  if (getProductionStatus(row) === 'In Progress') {
-    return { success: false, error: 'Cannot delete a batch that is in progress.' };
-  }
   const next = state.rows.filter((r) => r.id !== rowId);
+  if (next.length === state.rows.length) {
+    return { success: false, error: 'Row not found.' };
+  }
   state = { ...state, rows: next };
   persistRows(next);
   pushToApi(state.planId, state.planDate, next);

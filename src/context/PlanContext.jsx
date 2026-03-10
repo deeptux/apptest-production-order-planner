@@ -1,6 +1,9 @@
 import { useSyncExternalStore, useRef, useEffect } from 'react';
 import { getPlan, subscribePlan } from '../api/plan';
+import { getConfig, updateConfig } from '../api/config';
 import { isSupabaseConfigured } from '../lib/supabase';
+import { hydrateRecipesFromApi, getRecipesPayloadForApi } from '../store/recipeStore';
+import { hydrateLinesFromApi, getLinesPayloadForApi } from '../store/productionLinesStore';
 import { useSnackbar } from './SnackbarContext';
 import {
   initPlanStore,
@@ -32,6 +35,30 @@ function PlanSync() {
     }
     getPlan().then((data) => {
       hydrateFromApi(data);
+    });
+  }, []);
+
+  // Hydrate recipes and production lines from Supabase config when available.
+  useEffect(() => {
+    if (!isSupabaseConfigured()) return;
+    // Recipes
+    getConfig('recipes').then((data) => {
+      if (data?.payload?.recipes && Array.isArray(data.payload.recipes) && data.payload.recipes.length > 0) {
+        hydrateRecipesFromApi(data.payload.recipes);
+      } else {
+        // Seed Supabase with current local recipes (defaults) if no config exists yet.
+        const recipes = getRecipesPayloadForApi();
+        if (recipes.length > 0) updateConfig('recipes', { recipes });
+      }
+    });
+    // Production lines
+    getConfig('lines').then((data) => {
+      if (data?.payload?.lines && Array.isArray(data.payload.lines) && data.payload.lines.length > 0) {
+        hydrateLinesFromApi(data.payload.lines);
+      } else {
+        const lines = getLinesPayloadForApi();
+        if (lines.length > 0) updateConfig('lines', { lines });
+      }
     });
   }, []);
 

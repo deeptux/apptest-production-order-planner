@@ -54,5 +54,27 @@ create policy "Allow public update override_requests"
   using (true)
   with check (true);
 
+-- App configuration (recipes, production lines, etc.) stored as JSON by key.
+create table if not exists apptest_prodplanner.config (
+  key text primary key,
+  payload jsonb not null default '{}'::jsonb,
+  updated_at timestamptz not null default now()
+);
+
+alter table apptest_prodplanner.config enable row level security;
+
+create policy "Allow public read config"
+  on apptest_prodplanner.config for select
+  using (true);
+
+create policy "Allow public insert config"
+  on apptest_prodplanner.config for insert
+  with check (true);
+
+create policy "Allow public update config"
+  on apptest_prodplanner.config for update
+  using (true)
+  with check (true);
+
 -- Realtime: In Supabase Dashboard, go to Database > Replication and add
 -- apptest_prodplanner.plan and apptest_prodplanner.override_requests to the supabase_realtime publication.

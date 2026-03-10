@@ -5,6 +5,8 @@
  */
 import { SKU_PROCESS_DURATIONS } from '../data/skuProcessDurations.js';
 import { getProcessesForLine } from './productionLinesStore.js';
+import { isSupabaseConfigured } from '../lib/supabase';
+import { updateConfig } from '../api/config';
 
 const LOAF_RECIPES_KEY = 'loaf-recipes';
 
@@ -98,6 +100,22 @@ function persist() {
   try {
     localStorage.setItem(LOAF_RECIPES_KEY, JSON.stringify(recipes));
   } catch (_) {}
+  if (isSupabaseConfigured()) {
+    // Fire-and-forget; latest recipes are stored under config key "recipes".
+    updateConfig('recipes', { recipes });
+  }
+}
+
+/** Hydrate recipes from Supabase config payload (array of raw recipe objects). */
+export function hydrateRecipesFromApi(list) {
+  if (!Array.isArray(list) || list.length === 0) return;
+  recipes = list.map((r) => normalizeRecipe(r));
+  persist();
+}
+
+/** Serialize current recipes for pushing to Supabase config. */
+export function getRecipesPayloadForApi() {
+  return recipes.map((r) => ({ ...r }));
 }
 
 export function getRecipes() {
