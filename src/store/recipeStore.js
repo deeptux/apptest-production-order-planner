@@ -12,6 +12,15 @@ const LOAF_RECIPES_KEY = 'loaf-recipes';
 const LEGACY_PROCESS_IDS = ['mixing', 'makeup-dividing', 'makeup-panning', 'baking', 'packaging'];
 const LEGACY_KEYS = ['mixing', 'makeupDividing', 'makeupPanning', 'baking', 'packaging'];
 
+/** Map process id to legacy key for stage duration lookup. */
+export const PROCESS_ID_TO_LEGACY_KEY = {
+  'mixing': 'mixing',
+  'makeup-dividing': 'makeupDividing',
+  'makeup-panning': 'makeupPanning',
+  'baking': 'baking',
+  'packaging': 'packaging',
+};
+
 function legacyToProcessDurations(r) {
   return {
     'mixing': Number(r.mixing) || 0,
@@ -40,6 +49,7 @@ function recipeFromSku(name, durations, productionLineId = 'line-loaf') {
     id: `recipe-${slug}-${productionLineId}`,
     name,
     productionLineId,
+    endDoughProcessId: 'mixing',
     ...processDurationsToLegacy(processDurations),
     processDurations,
   };
@@ -76,6 +86,7 @@ function normalizeRecipe(r) {
     id: r.id || `recipe-${String(r.name).replace(/\s+/g, '-').toLowerCase()}-${productionLineId}-${Date.now()}`,
     name: String(r.name || '').trim(),
     productionLineId,
+    endDoughProcessId: (r.endDoughProcessId && typeof r.endDoughProcessId === 'string') ? r.endDoughProcessId : 'mixing',
     ...legacy,
     processDurations,
   };
@@ -102,6 +113,12 @@ export function getRecipesForLine(lineId) {
 export function getRecipeByName(name) {
   if (!name) return null;
   return recipes.find((r) => r.name === name) ?? null;
+}
+
+/** Which process defines "End Dough" for this product (process id, e.g. 'mixing', 'makeup-panning'). Used by Scheduling. */
+export function getEndDoughProcessIdForProduct(productName) {
+  const r = getRecipeByName(productName);
+  return (r && r.endDoughProcessId) ? r.endDoughProcessId : 'mixing';
 }
 
 export function getStageDurationsForProduct(productName) {
@@ -144,6 +161,7 @@ export function addRecipe(recipe) {
     id: recipe.id,
     name: recipe.name,
     productionLineId: lineId,
+    endDoughProcessId: recipe.endDoughProcessId,
     mixing: recipe.mixing,
     makeupDividing: recipe.makeupDividing,
     makeupPanning: recipe.makeupPanning,
@@ -164,6 +182,7 @@ export function updateRecipe(id, updates) {
   if (idx === -1) return null;
   const current = recipes[idx];
   let next = { ...current, ...updates };
+  if (updates.endDoughProcessId !== undefined) next.endDoughProcessId = updates.endDoughProcessId;
   if (updates.processDurations !== undefined) {
     next.processDurations = { ...(current.processDurations || {}), ...updates.processDurations };
     const legacy = processDurationsToLegacy(next.processDurations);

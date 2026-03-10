@@ -9,7 +9,8 @@ import {
   updateRecipe,
   deleteRecipe,
 } from '../store/recipeStore';
-import { getLines, getProcessesForLine, getMixingProfiles, getProfileTotalMinutes } from '../store/productionLinesStore';
+import { getLines, getProcessesForLine, getMixingProfiles, getProfileTotalMinutes, updateProductNameInCapacityProfiles } from '../store/productionLinesStore';
+import { updateProductNameInRows } from '../store/planStore';
 
 export default function RecipesView() {
   const [selectedLineId, setSelectedLineId] = useState(''); // '' = All lines
@@ -27,6 +28,7 @@ export default function RecipesView() {
     name: '',
     productionLineId: lines[0]?.id ?? '',
     processDurations: {},
+    endDoughProcessId: 'mixing',
   });
   const [deleteConfirmId, setDeleteConfirmId] = useState(null);
   const [, setRefreshTick] = useState(0);
@@ -35,7 +37,11 @@ export default function RecipesView() {
 
   const startEdit = useCallback((recipe) => {
     setEditingId(recipe.id);
-    setDraft({ ...recipe, processDurations: { ...(recipe.processDurations || {}) } });
+    setDraft({
+      ...recipe,
+      processDurations: { ...(recipe.processDurations || {}) },
+      endDoughProcessId: recipe.endDoughProcessId ?? 'mixing',
+    });
   }, []);
 
   const updateDraftField = useCallback((field, value) => {
@@ -57,7 +63,18 @@ export default function RecipesView() {
 
   const saveEdit = useCallback(() => {
     if (!draft) return;
-    updateRecipe(draft.id, { name: draft.name, productionLineId: draft.productionLineId, processDurations: draft.processDurations });
+    const oldName = getRecipes().find((r) => r.id === draft.id)?.name?.trim();
+    const newName = (draft.name || '').trim();
+    updateRecipe(draft.id, {
+      name: newName,
+      productionLineId: draft.productionLineId,
+      processDurations: draft.processDurations,
+      endDoughProcessId: draft.endDoughProcessId,
+    });
+    if (oldName && oldName !== newName) {
+      updateProductNameInRows(oldName, newName);
+      updateProductNameInCapacityProfiles(oldName, newName);
+    }
     refresh();
     setEditingId(null);
     setDraft(null);
@@ -77,11 +94,12 @@ export default function RecipesView() {
       processDurations: addDraft.processDurations && Object.keys(addDraft.processDurations).length
         ? addDraft.processDurations
         : {},
+      endDoughProcessId: addDraft.endDoughProcessId || 'mixing',
     };
     addRecipe(toAdd);
     refresh();
     setAddOpen(false);
-    setAddDraft({ name: '', productionLineId: lines[0]?.id ?? '', processDurations: {} });
+    setAddDraft({ name: '', productionLineId: lines[0]?.id ?? '', processDurations: {}, endDoughProcessId: 'mixing' });
   }, [addDraft, lines, refresh]);
 
   const handleDelete = useCallback((id) => {
@@ -142,6 +160,9 @@ export default function RecipesView() {
                 ))}
                 <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 whitespace-nowrap bg-surface-card-warm">
                   Total Process Time (mins)
+                </th>
+                <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 whitespace-nowrap bg-surface-card-warm">
+                  End Dough
                 </th>
               </tr>
             </thead>
@@ -273,6 +294,33 @@ export default function RecipesView() {
                       );
                     })}
                     <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-700 tabular-nums select-none">{displayTotal}</td>
+                    <td className="py-2 sm:py-2.5 px-2 sm:px-4">
+                      {(() => {
+                        const lineId = (isEditing && draft ? draft.productionLineId : recipe.productionLineId) ?? '';
+                        const procs = lineId ? getProcessesForLine(lineId) : [];
+                        const currentEndDough = (isEditing && draft ? draft.endDoughProcessId : recipe.endDoughProcessId) ?? 'mixing';
+                        const selectedProc = procs.find((p) => p.id === currentEndDough);
+                        if (isEditing && procs.length > 0) {
+                          return (
+                            <select
+                              value={currentEndDough}
+                              onChange={(e) => updateDraftField('endDoughProcessId', e.target.value)}
+                              className="border border-gray-300 rounded px-2 py-1 text-gray-900 bg-white text-inherit min-w-[8rem] sm:min-w-[10rem]"
+                              aria-label="End Dough process"
+                            >
+                              {procs.map((p) => (
+                                <option key={p.id} value={p.id}>{p.name}</option>
+                              ))}
+                            </select>
+                          );
+                        }
+                        return (
+                          <span className="text-gray-700 text-inherit">
+                            {selectedProc ? selectedProc.name : (currentEndDough || '—')}
+                          </span>
+                        );
+                      })()}
+                    </td>
                   </tr>
                 );
               })}
@@ -291,11 +339,17 @@ export default function RecipesView() {
               <label className="block text-xs sm:text-sm font-medium text-gray-700">Production line</label>
               <select
                 value={addDraft.productionLineId ?? ''}
-                onChange={(e) => setAddDraft((p) => ({
-                  ...p,
-                  productionLineId: (e.target.value || lines[0]?.id) ?? '',
-                  processDurations: {},
-                }))}
+                onChange={(e) => {
+                  const lineId = (e.target.value || lines[0]?.id) ?? '';
+                  const procs = lineId ? getProcessesForLine(lineId) : [];
+                  const firstProcessId = procs[0]?.id ?? 'mixing';
+                  setAddDraft((p) => ({
+                    ...p,
+                    productionLineId: lineId,
+                    processDurations: {},
+                    endDoughProcessId: firstProcessId,
+                  }));
+                }}
                 className="w-full border border-gray-300 rounded px-3 py-2 text-gray-900 text-sm sm:text-base bg-white min-w-[10rem]"
               >
                 {lines.map((l) => (
@@ -360,6 +414,29 @@ export default function RecipesView() {
                     })}
                   </>
                 ) : null;
+              })()}
+              {addDraft.productionLineId && (() => {
+                const addLineProcs = getProcessesForLine(addDraft.productionLineId);
+                if (addLineProcs.length === 0) return null;
+                const currentEndDough = addDraft.endDoughProcessId || 'mixing';
+                const validEndDough = addLineProcs.some((p) => p.id === currentEndDough) ? currentEndDough : (addLineProcs[0]?.id ?? 'mixing');
+                return (
+                  <div className="mt-3">
+                    <label className="block text-xs sm:text-sm font-medium text-gray-700">End Dough</label>
+                    <p className="text-[0.65rem] sm:text-xs text-gray-400 mt-0.5 mb-1">
+                      Process that defines the &quot;End Dough&quot; time on the Scheduling page (Start Sponge + duration up to this process).
+                    </p>
+                    <select
+                      value={validEndDough}
+                      onChange={(e) => setAddDraft((p) => ({ ...p, endDoughProcessId: e.target.value }))}
+                      className="w-full border border-gray-300 rounded px-3 py-2 text-gray-900 text-sm sm:text-base bg-white min-w-[10rem]"
+                    >
+                      {addLineProcs.map((p) => (
+                        <option key={p.id} value={p.id}>{p.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                );
               })()}
             </div>
             <div className="mt-6 flex justify-end gap-2">

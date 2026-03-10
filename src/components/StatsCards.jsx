@@ -1,5 +1,6 @@
 import { Package, TrendingUp, Calendar, Clock, Flag } from 'lucide-react';
 import { usePlan } from '../context/PlanContext';
+import { parseTimeToMinutes } from '../utils/stageDurations';
 
 function formatDate(d) {
   if (!d || !(d instanceof Date)) return '—';
@@ -11,19 +12,53 @@ function formatTime(str) {
   return str;
 }
 
+function formatDateStr(dateStr) {
+  if (!dateStr || typeof dateStr !== 'string') return '—';
+  const [y, m, d] = dateStr.split('-').map(Number);
+  if (!y || !m || !d) return '—';
+  const dt = new Date(y, m - 1, d);
+  if (Number.isNaN(dt.getTime())) return '—';
+  return dt.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+}
+
+function nextDay(dateStr) {
+  if (!dateStr || typeof dateStr !== 'string') return '';
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const next = new Date(y, m - 1, d + 1);
+  return `${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, '0')}-${String(next.getDate()).padStart(2, '0')}`;
+}
+
 const shouldTruncateLabel = (text) => String(text).length > 18;
 
 export default function StatsCards() {
   const { rows, planDate } = usePlan();
 
   const totalBatches = rows.length;
-  const totalOutput = rows.reduce((sum, r) => sum + (Number(r.soQty) || 0), 0);
-  const firstStart = rows.length ? (rows[0].startSponge || '—') : '—';
-  const lastEnd = rows.length ? (rows[rows.length - 1].endBatch || '—') : '—';
+  const totalOutput = rows.reduce((sum, r) => sum + (Number(r.theorOutput) ?? Number(r.soQty) ?? 0), 0);
+  const sortedByStart = [...rows].sort((a, b) => {
+    const d = (a.date || '').localeCompare(b.date || '');
+    if (d !== 0) return d;
+    return parseTimeToMinutes(a.startSponge) - parseTimeToMinutes(b.startSponge);
+  });
+  const firstStartRow = sortedByStart.length ? sortedByStart[0] : null;
+  const firstStart = firstStartRow ? `${formatDateStr(firstStartRow.date)} ${formatTime(firstStartRow.startSponge)}` : '—';
+  const withEnd = rows.map((r) => {
+    const startM = parseTimeToMinutes(r.startSponge);
+    const endM = parseTimeToMinutes(r.endBatch);
+    const endDate = endM <= startM && r.endBatch !== r.startSponge ? nextDay(r.date || '') : (r.date || '');
+    return { row: r, endDate, endBatch: r.endBatch || '00:00' };
+  });
+  const sortedByEnd = withEnd.sort((a, b) => {
+    const d = (a.endDate || '').localeCompare(b.endDate || '');
+    if (d !== 0) return d;
+    return parseTimeToMinutes(a.endBatch) - parseTimeToMinutes(b.endBatch);
+  });
+  const lastEndEntry = sortedByEnd.length ? sortedByEnd[sortedByEnd.length - 1] : null;
+  const lastEnd = lastEndEntry ? `${formatDateStr(lastEndEntry.endDate)} ${formatTime(lastEndEntry.endBatch)}` : '—';
 
   const cards = [
     { label: 'Total Batches', value: totalBatches, icon: Package },
-    { label: 'Total Output (pckg)', value: `${totalOutput.toLocaleString()} pckg`, icon: TrendingUp },
+    { label: 'Total Output (pkg)', value: `${totalOutput.toLocaleString()} pkg`, icon: TrendingUp },
     { label: 'Plan Date', value: formatDate(planDate), icon: Calendar },
     { label: 'First Start', value: formatTime(firstStart), icon: Clock },
     { label: 'Last End', value: formatTime(lastEnd), icon: Flag },
@@ -49,7 +84,7 @@ export default function StatsCards() {
               >
                 {label}
               </p>
-              <p className="text-kpi-value sm:text-sm-kpi-value md:text-md-kpi-value lg:text-md-kpi-value xl:text-lg-kpi-value 2xl:text-[2rem] text-gray-900 whitespace-nowrap truncate">
+              <p className="text-kpi-value sm:text-sm-kpi-value md:text-md-kpi-value lg:text-md-kpi-value xl:text-lg-kpi-value 2xl:text-[2rem] text-gray-900 leading-tight break-words whitespace-normal sm:whitespace-nowrap">
                 {value}
               </p>
             </div>

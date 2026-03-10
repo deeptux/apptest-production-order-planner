@@ -1,8 +1,30 @@
-import { getStageDurationsForProduct as getFromRecipe, getTotalProcessMinutes as getTotalFromRecipe } from '../store/recipeStore.js';
+import { getStageDurationsForProduct as getFromRecipe, getTotalProcessMinutes as getTotalFromRecipe, getEndDoughProcessIdForProduct } from '../store/recipeStore.js';
 import { getStageDurationsForProduct as getFromSku, getTotalProcessMinutes as getTotalFromSku } from '../data/skuProcessDurations.js';
 
 function getStageDurationsForProduct(productName) {
   return getFromRecipe(productName) ?? getFromSku(productName);
+}
+
+/** Process order for cumulative "End Dough" (first process = Mixing, etc.). */
+const END_DOUGH_ORDER = ['mixing', 'makeup-dividing', 'makeup-panning', 'baking', 'packaging'];
+const PROCESS_ID_TO_LEGACY_KEY = {
+  'mixing': 'mixing',
+  'makeup-dividing': 'makeupDividing',
+  'makeup-panning': 'makeupPanning',
+  'baking': 'baking',
+  'packaging': 'packaging',
+};
+
+/** Cumulative minutes from start through the given process (inclusive). Used for End Dough. */
+function getCumulativeMinutesUpToProcess(stages, processId) {
+  const idx = END_DOUGH_ORDER.indexOf(processId);
+  if (idx === -1) return stages.mixing ?? 0;
+  let sum = 0;
+  for (let i = 0; i <= idx; i++) {
+    const key = PROCESS_ID_TO_LEGACY_KEY[END_DOUGH_ORDER[i]];
+    if (key) sum += (stages[key] ?? 0);
+  }
+  return sum;
 }
 
 function getTotalProcessMinutes(productName) {
@@ -83,7 +105,8 @@ export function computeStageDurationsForRow(row) {
 }
 
 /**
- * Recompute endDough (end of mixing) and endBatch from row's startSponge and process durations.
+ * Recompute endDough and endBatch from row's startSponge and process durations.
+ * End Dough = end of the process selected in the recipe (e.g. Mixing → end of mixing; Makeup Panning → end of mixing + dividing + panning).
  * Returns { endDough, endBatch } as "HH:MM" or existing values if total minutes are invalid.
  */
 export function recomputeEndTimesForRow(row) {
@@ -92,8 +115,9 @@ export function recomputeEndTimesForRow(row) {
   if (!total || !row.startSponge || typeof row.startSponge !== 'string') {
     return { endDough: row.endDough ?? '00:00', endBatch: row.endBatch ?? '00:00' };
   }
-  const mixingMinutes = stages.mixing ?? 0;
-  const endDough = addMinutesToTime(row.startSponge, mixingMinutes);
+  const endDoughProcessId = getEndDoughProcessIdForProduct(row.product);
+  const endDoughMinutes = getCumulativeMinutesUpToProcess(stages, endDoughProcessId);
+  const endDough = addMinutesToTime(row.startSponge, endDoughMinutes);
   const endBatch = addMinutesToTime(row.startSponge, total);
   return { endDough, endBatch };
 }

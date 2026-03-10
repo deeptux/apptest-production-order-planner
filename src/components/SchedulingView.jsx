@@ -1,24 +1,44 @@
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { Plus, Trash2, Pencil } from 'lucide-react';
 import * as Dialog from '@radix-ui/react-dialog';
 import * as Tooltip from '@radix-ui/react-tooltip';
 import { usePlan } from '../context/PlanContext';
-import { computeTheoreticalOutput } from '../store/planStore';
+import { useSnackbar } from '../context/SnackbarContext';
+import { computeTheoreticalOutput, getLatestBatchEndForLine, getOrderBatchAndLineBatch } from '../store/planStore';
 import { recomputeEndTimesForRow } from '../utils/stageDurations';
+import { getProductionStatus } from '../utils/productionStatus';
 import { getRecipesForLine, getTotalProcessMinutes, getTotalProcessMinutesForLine } from '../store/recipeStore';
-import { getCapacityForProduct, getDoughWeightKgForProduct, getGramsPerUnitForProduct, getTotalDoughWeightKgForProduct } from '../store/capacityProfileStore';
+import { getCapacityForProduct, getDoughWeightKgForProduct, getGramsPerUnitForProduct, getTotalDoughWeightKgForProduct, getYieldForProduct } from '../store/capacityProfileStore';
 import { getLines, getLineById } from '../store/productionLinesStore';
 
 const FIELDS_THAT_TRIGGER_AUTO_ADJUST = ['startSponge', 'product'];
 
 export default function SchedulingView() {
-  const { planDate, setPlanDate, rows, setRows, reorderRows, addBatch, deleteBatch } = usePlan();
+  const { planDate, setPlanDate, rows, setRows, reorderRows, swapOrderBetweenRows, addBatch, addBatchesFromModal, deleteBatch } = usePlan();
+  const { show: showSnackbar } = useSnackbar() ?? {};
   const [editingRowId, setEditingRowId] = useState(null);
   const [draftRow, setDraftRow] = useState(null);
+  const [addBatchModalOpen, setAddBatchModalOpen] = useState(false);
+  const [addBatchForm, setAddBatchForm] = useState({
+    date: '',
+    startSponge: '00:00',
+    productionLineId: '',
+    product: '',
+    salesOrder: '',
+    soQty: 0,
+    carryOverExcess: 0,
+    exchangeForLoss: 0,
+    excess: 0,
+    samples: 2,
+    theorOutputOverride: '',
+  });
+  const [addBatchValidationError, setAddBatchValidationError] = useState('');
+  const [addBatchSelectedBatchIndex, setAddBatchSelectedBatchIndex] = useState(0);
   const [selectedLineId, setSelectedLineId] = useState('all');
   const [showAllDates, setShowAllDates] = useState(false);
   const [hoveredRowId, setHoveredRowId] = useState(null);
   const [clickedRowId, setClickedRowId] = useState(null);
+  const [statusTick, setStatusTick] = useState(() => Date.now());
   const clickTimeoutRef = useRef(null);
   const hoverTimeoutRef = useRef(null);
   const lines = getLines();
@@ -28,6 +48,11 @@ export default function SchedulingView() {
       if (clickTimeoutRef.current) clearTimeout(clickTimeoutRef.current);
       if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
     };
+  }, []);
+
+  useEffect(() => {
+    const interval = setInterval(() => setStatusTick(Date.now()), 60 * 1000);
+    return () => clearInterval(interval);
   }, []);
 
   const formatDateInput = (d) => {
@@ -47,6 +72,72 @@ export default function SchedulingView() {
     : rowsByLine.filter((r) => r.date === planDateStr);
   const lineIdForNewBatch = selectedLineId && selectedLineId !== 'all' ? selectedLineId : getLines()[0]?.id;
   const recipeOptions = lineIdForNewBatch ? getRecipesForLine(lineIdForNewBatch) : [];
+  const { orderBatch: orderBatchMap, lineBatch: lineBatchMap } = useMemo(
+    () => getOrderBatchAndLineBatch(rows),
+    [rows]
+  );
+
+  const openAddBatchModal = useCallback(() => {
+    const lineId = lineIdForNewBatch || getLines()[0]?.id || 'line-loaf';
+    const latest = getLatestBatchEndForLine(lineId);
+    const defaultDate = planDateStr || formatDateInput(new Date());
+    const defaultTime = latest ? latest.endBatch : '00:00';
+    setAddBatchForm({
+      date: defaultDate,
+      startSponge: defaultTime,
+      productionLineId: lineId,
+      product: '',
+      salesOrder: '',
+      soQty: 0,
+      carryOverExcess: 0,
+      exchangeForLoss: 0,
+      excess: 0,
+      samples: 2,
+      theorOutputOverride: '',
+    });
+    setAddBatchValidationError('');
+    setAddBatchSelectedBatchIndex(0);
+    setAddBatchModalOpen(true);
+  }, [lineIdForNewBatch, planDateStr]);
+
+  const closeAddBatchModal = useCallback(() => {
+    setAddBatchModalOpen(false);
+    setAddBatchValidationError('');
+  }, []);
+
+  const handleAddBatchSubmit = useCallback(() => {
+    setAddBatchValidationError('');
+    const f = addBatchForm;
+    const salesOrderNum = f.salesOrder !== '' && !Number.isNaN(Number(f.salesOrder)) ? Number(f.salesOrder) : 0;
+    const carryOverNum = Number(f.carryOverExcess) || 0;
+    const computedSoCoExcess = Math.max(0, salesOrderNum - carryOverNum);
+    const theorOutput = f.theorOutputOverride !== undefined && f.theorOutputOverride !== '' && !Number.isNaN(Number(f.theorOutputOverride))
+      ? Number(f.theorOutputOverride)
+      : computedSoCoExcess + (Number(f.exchangeForLoss) || 0) + (Number(f.excess) || 0) + (Number(f.samples) || 2);
+    if (theorOutput <= 0) {
+      setAddBatchValidationError('Theoretical Output must be greater than 0 (set Sales Order, or use Exchange for LOSS, Excess, Samples, or override).');
+      return;
+    }
+    const result = addBatchesFromModal({
+      productionLineId: f.productionLineId,
+      date: f.date,
+      startSponge: f.startSponge,
+      product: f.product,
+      salesOrder: f.salesOrder !== '' && !Number.isNaN(Number(f.salesOrder)) ? Number(f.salesOrder) : undefined,
+      soQty: f.soQty,
+      soCoExcess: computedSoCoExcess,
+      carryOverExcess: carryOverNum,
+      exchangeForLoss: f.exchangeForLoss,
+      excess: f.excess,
+      samples: f.samples,
+      theorOutputOverride: f.theorOutputOverride !== '' ? f.theorOutputOverride : undefined,
+    });
+    if (result.success) {
+      closeAddBatchModal();
+    } else {
+      setAddBatchValidationError(result.error || 'Could not add batch.');
+    }
+  }, [addBatchForm, addBatchesFromModal, closeAddBatchModal]);
 
   const handlePlanDateChange = (e) => {
     const v = e.target.value;
@@ -60,6 +151,7 @@ export default function SchedulingView() {
     const lineId = row.productionLineId || lineIdForNewBatch || getLines()[0]?.id;
     const draft = { ...row, productionLineId: lineId };
     draft.date = row.date ?? '';
+    draft.salesOrder = row.salesOrder !== undefined && row.salesOrder !== '' ? row.salesOrder : '';
     draft.soCoExcess = row.soCoExcess !== undefined ? row.soCoExcess : (row.soQty ?? 0);
     draft.exchangeForLoss = row.exchangeForLoss !== undefined ? row.exchangeForLoss : 0;
     draft.excess = row.excess !== undefined ? row.excess : 0;
@@ -114,7 +206,8 @@ export default function SchedulingView() {
   const confirmSave = useCallback(() => {
     if (!draftRow) return;
     const lineId = draftRow.productionLineId || lineIdForNewBatch;
-    const toSave = { ...draftRow, productionLineId: lineId };
+    const soCoExcess = Math.max(0, (Number(draftRow.salesOrder) || 0) - (Number(draftRow.carryOverExcess) || 0));
+    const toSave = { ...draftRow, productionLineId: lineId, soCoExcess };
     setRows((prev) =>
       prev.map((r) => (r.id === toSave.id ? { ...toSave } : r))
     );
@@ -124,18 +217,18 @@ export default function SchedulingView() {
 
   const handleMoveUp = (index) => {
     if (index <= 0) return;
-    const fromIdx = rows.findIndex((r) => r.id === displayedRows[index].id);
-    const toIdx = rows.findIndex((r) => r.id === displayedRows[index - 1].id);
-    if (fromIdx === -1 || toIdx === -1) return;
-    reorderRows(fromIdx, toIdx);
+    const row = displayedRows[index];
+    const prevRow = displayedRows[index - 1];
+    if (row.productionLineId !== prevRow.productionLineId || (row.date || '') !== (prevRow.date || '')) return;
+    swapOrderBetweenRows(row.id, prevRow.id);
   };
 
   const handleMoveDown = (index) => {
     if (index >= displayedRows.length - 1) return;
-    const fromIdx = rows.findIndex((r) => r.id === displayedRows[index].id);
-    const toIdx = rows.findIndex((r) => r.id === displayedRows[index + 1].id);
-    if (fromIdx === -1 || toIdx === -1) return;
-    reorderRows(fromIdx, toIdx);
+    const row = displayedRows[index];
+    const nextRow = displayedRows[index + 1];
+    if (row.productionLineId !== nextRow.productionLineId || (row.date || '') !== (nextRow.date || '')) return;
+    swapOrderBetweenRows(row.id, nextRow.id);
   };
 
   const isEditing = (rowId) => editingRowId === rowId;
@@ -198,7 +291,7 @@ export default function SchedulingView() {
           <span className="text-xs sm:text-sm 2xl:text-base text-muted font-medium">Production orders</span>
           <button
             type="button"
-            onClick={() => addBatch(lineIdForNewBatch)}
+            onClick={openAddBatchModal}
             disabled={!lineIdForNewBatch}
             className="inline-flex items-center gap-1.5 sm:gap-2 px-3 sm:px-4 py-1.5 sm:py-2 bg-primary text-white rounded-lg font-medium hover:bg-primary-dark transition-colors text-xs sm:text-sm disabled:opacity-50"
           >
@@ -216,12 +309,16 @@ export default function SchedulingView() {
                 <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[4rem]">Line</th>
                 <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[5rem]">Date</th>
                 <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[6rem]">Product</th>
-                <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[5rem]">Sales Order (SO) Qty</th>
+                <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[4rem]">Sales Order</th>
+                <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[5rem]">Total Qty</th>
+                <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[4rem]">Batch Qty</th>
                 <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[4rem]">Process Time</th>
                 <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[4rem]">Start Sponge</th>
                 <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[4rem]">End Dough</th>
                 <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[4rem]">End Batch</th>
-                <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[3rem]">Batch</th>
+                <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[3rem]">Order Batch</th>
+                <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[3rem]">Line Batch</th>
+                <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[4rem]">Production Status</th>
               </tr>
             </thead>
             <tbody>
@@ -234,7 +331,9 @@ export default function SchedulingView() {
                 const totalGramsDisplay = totalDoughKg != null && !Number.isNaN(totalDoughKg) ? (totalDoughKg * 1000).toLocaleString('en-US', { maximumFractionDigits: 0 }) : '—';
                 const tooltipContent = (
                   <div className="text-left text-xs sm:text-sm space-y-1 p-1 max-w-[280px]">
-                    <div><span className="font-medium text-gray-500">Sales Order (SO) Qty:</span> {row.soQty ?? '—'}</div>
+                    <div><span className="font-medium text-gray-500">Total Quantity:</span> {row.soQty ?? '—'}</div>
+                    <div><span className="font-medium text-gray-500">Batch Qty (Quantity of the Batch):</span> {row.theorOutput ?? '—'}</div>
+                    <div><span className="font-medium text-gray-500">Sales Order:</span> {row.salesOrder ?? '—'}</div>
                     <div><span className="font-medium text-gray-500">SO-CO Excess:</span> {row.soCoExcess ?? '—'}</div>
                     <div><span className="font-medium text-gray-500">Exchange Loss:</span> {row.exchangeForLoss ?? '—'}</div>
                     <div><span className="font-medium text-gray-500">Excess:</span> {row.excess ?? '—'}</div>
@@ -282,18 +381,18 @@ export default function SchedulingView() {
                         <button
                           type="button"
                           onClick={() => handleMoveUp(index)}
-                          disabled={index === 0}
+                          disabled={index === 0 || (displayedRows[index - 1] && (displayedRows[index].productionLineId !== displayedRows[index - 1].productionLineId || (displayedRows[index].date || '') !== (displayedRows[index - 1].date || '')))}
                           className="p-1 rounded border border-gray-300 disabled:opacity-50 hover:bg-gray-100 text-inherit"
-                          aria-label="Move up"
+                          aria-label="Swap order with slot above (same line and date)"
                         >
                           ↑
                         </button>
                         <button
                           type="button"
                           onClick={() => handleMoveDown(index)}
-                          disabled={index === displayedRows.length - 1}
+                          disabled={index === displayedRows.length - 1 || (displayedRows[index + 1] && (displayedRows[index].productionLineId !== displayedRows[index + 1].productionLineId || (displayedRows[index].date || '') !== (displayedRows[index + 1].date || '')))}
                           className="p-1 rounded border border-gray-300 disabled:opacity-50 hover:bg-gray-100 text-inherit"
-                          aria-label="Move down"
+                          aria-label="Swap order with slot below (same line and date)"
                         >
                           ↓
                         </button>
@@ -311,9 +410,13 @@ export default function SchedulingView() {
                         </button>
                         <button
                           type="button"
-                          onClick={() => deleteBatch(row.id)}
-                          className="p-1.5 rounded border border-gray-300 hover:bg-red-50 hover:border-red-300 text-gray-600 hover:text-red-700 transition-colors inline-flex items-center justify-center"
-                          aria-label="Delete row"
+                          onClick={() => {
+                            const result = deleteBatch(row.id);
+                            if (result && !result.success && result.error) showSnackbar?.(result.error);
+                          }}
+                          disabled={getProductionStatus(row, statusTick) === 'In Progress'}
+                          className="p-1.5 rounded border border-gray-300 hover:bg-red-50 hover:border-red-300 text-gray-600 hover:text-red-700 transition-colors inline-flex items-center justify-center disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+                          aria-label={getProductionStatus(row, statusTick) === 'In Progress' ? 'Cannot delete batch in progress' : 'Delete row'}
                         >
                           <Trash2 className="w-4 h-4 sm:w-5 sm:h-5" />
                         </button>
@@ -322,12 +425,31 @@ export default function SchedulingView() {
                     <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-700 text-inherit">{getLineById(row.productionLineId)?.name ?? '—'}</td>
                     <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-700 text-inherit">{row.date ?? '—'}</td>
                     <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-800 text-inherit">{row.product ?? '—'}</td>
+                    <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-800 text-inherit">{row.salesOrder ?? '—'}</td>
                     <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-800 text-inherit">{row.soQty ?? '—'}</td>
+                    <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-800 text-inherit">{row.theorOutput ?? '—'}</td>
                     <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-700 text-inherit">{displayProcTime || '—'}</td>
                     <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-700 text-inherit">{row.startSponge ?? '—'}</td>
                     <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-700 text-inherit">{row.endDough ?? '—'}</td>
                     <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-700 text-inherit">{row.endBatch ?? '—'}</td>
-                    <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-700 text-inherit">{row.batch ?? '—'}</td>
+                    <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-700 text-inherit">{orderBatchMap[row.id] ?? '—'}</td>
+                    <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-700 text-inherit">{lineBatchMap[row.id] ?? '—'}</td>
+                    <td className="py-2 sm:py-2.5 px-2 sm:px-4">
+                      {(() => {
+                        const status = getProductionStatus(row, statusTick);
+                        const statusClass =
+                          status === 'In Progress'
+                            ? 'bg-amber-100 text-amber-800 border-amber-200'
+                            : status === 'Finished'
+                              ? 'bg-green-100 text-green-800 border-green-200'
+                              : 'bg-gray-100 text-gray-700 border-gray-200';
+                        return (
+                          <span className={`inline-block px-2 py-0.5 rounded border text-xs font-medium ${statusClass}`}>
+                            {status}
+                          </span>
+                        );
+                      })()}
+                    </td>
                   </tr>
                     </Tooltip.Trigger>
                     <Tooltip.Portal>
@@ -383,12 +505,19 @@ export default function SchedulingView() {
                       </select>
                     </div>
                     <div>
-                      <label className="block text-xs font-medium text-gray-600 mb-0.5">Sales Order (SO) Qty</label>
+                      <label className="block text-xs font-medium text-gray-600 mb-0.5">Total Quantity</label>
                       <input type="number" value={r.soQty ?? ''} onChange={(e) => updateDraft('soQty', Number(e.target.value) || 0)} className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900" />
                     </div>
                     <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-0.5">Sales Order (base qty)</label>
+                      <input type="number" value={r.salesOrder ?? ''} onChange={(e) => updateDraft('salesOrder', e.target.value === '' ? '' : Number(e.target.value))} className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900" placeholder="e.g. 1090" />
+                    </div>
+                    <div>
                       <label className="block text-xs font-medium text-gray-600 mb-0.5">SO-CO Excess</label>
-                      <input type="number" value={r.soCoExcess ?? ''} onChange={(e) => updateDraft('soCoExcess', Number(e.target.value) || 0)} className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900" />
+                      <div className="w-full border border-gray-200 rounded px-2 py-1.5 bg-gray-50 text-gray-700">
+                        {Math.max(0, (Number(r.salesOrder) || 0) - (Number(r.carryOverExcess) || 0))}
+                      </div>
+                      <p className="text-xs text-gray-500 mt-0.5">Computed: Sales Order − Carry Over (read-only).</p>
                     </div>
                     <div>
                       <label className="block text-xs font-medium text-gray-600 mb-0.5">Exchange Loss</label>
@@ -440,8 +569,18 @@ export default function SchedulingView() {
                       <div className="w-full border border-gray-200 rounded px-2 py-1.5 bg-gray-50 text-gray-700">{r.endBatch ?? '—'}</div>
                     </div>
                     <div>
-                      <label className="block text-xs font-medium text-gray-600 mb-0.5">Batch</label>
-                      <div className="w-full border border-gray-200 rounded px-2 py-1.5 bg-gray-50 text-gray-700">{r.batch ?? '—'}</div>
+                      <label className="block text-xs font-medium text-gray-600 mb-0.5">Order Batch</label>
+                      <div className="w-full border border-gray-200 rounded px-2 py-1.5 bg-gray-50 text-gray-700">{orderBatchMap[r.id] ?? '—'}</div>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-0.5">Line Batch</label>
+                      <div className="w-full border border-gray-200 rounded px-2 py-1.5 bg-gray-50 text-gray-700">{lineBatchMap[r.id] ?? '—'}</div>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-0.5">Production Status</label>
+                      <div className="w-full border border-gray-200 rounded px-2 py-1.5 bg-gray-50 text-gray-700">
+                        {getProductionStatus(r, statusTick)}
+                      </div>
                     </div>
                   </>
                 );
@@ -455,6 +594,256 @@ export default function SchedulingView() {
               </Dialog.Close>
               <button type="button" onClick={confirmSave} className="px-4 py-2 rounded-lg bg-primary text-white text-sm font-medium hover:bg-primary-dark">
                 Save
+              </button>
+            </div>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
+
+      <Dialog.Root open={addBatchModalOpen} onOpenChange={(open) => !open && closeAddBatchModal()}>
+        <Dialog.Portal>
+          <Dialog.Overlay className="fixed inset-0 bg-black/50 z-40 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0" />
+          <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-full max-w-lg max-h-[90vh] -translate-x-1/2 -translate-y-1/2 rounded-lg border border-gray-200 bg-white shadow-lg flex flex-col">
+            <div className="p-4 border-b border-gray-200">
+              <Dialog.Title className="text-lg font-semibold text-gray-900">Add batch</Dialog.Title>
+              {/* <Dialog.Description className="text-sm text-gray-600 mt-0.5">
+                Set batch start date and time, product, and demand. <strong>Total Quantity</strong> (e.g. 2000) is the total pieces to produce. Theoretical Output = SO-CO Excess + Exchange for LOSS + Excess + Samples (or override). Batches are created automatically based on capacity.
+              </Dialog.Description> */}
+            </div>
+            <div className="p-4 overflow-y-auto flex-1 grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
+              {addBatchValidationError && (
+                <div className="sm:col-span-2 p-2 rounded bg-red-50 border border-red-200 text-red-800 text-xs">
+                  {addBatchValidationError}
+                </div>
+              )}
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-0.5">Batch start date</label>
+                <input
+                  type="date"
+                  value={addBatchForm.date}
+                  onChange={(e) => setAddBatchForm((p) => ({ ...p, date: e.target.value }))}
+                  onFocus={() => setAddBatchValidationError('')}
+                  className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-0.5">Start Sponge (time)</label>
+                <input
+                  type="time"
+                  value={addBatchForm.startSponge}
+                  onChange={(e) => setAddBatchForm((p) => ({ ...p, startSponge: e.target.value || '00:00' }))}
+                  onFocus={() => setAddBatchValidationError('')}
+                  className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900"
+                />
+                {/* <p className="text-xs text-gray-500 mt-0.5">When plan date is today, start cannot be in the past. Start must be after existing batch end on this line.</p> */}
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-0.5">Production line</label>
+                <select
+                  value={addBatchForm.productionLineId}
+                  onChange={(e) => setAddBatchForm((p) => ({ ...p, productionLineId: e.target.value, product: '' }))}
+                  className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900"
+                >
+                  {lines.map((line) => (
+                    <option key={line.id} value={line.id}>{line.name}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-0.5">Product</label>
+                <select
+                  value={addBatchForm.product}
+                  onChange={(e) => setAddBatchForm((p) => ({ ...p, product: e.target.value }))}
+                  className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900"
+                >
+                  <option value="">— Select product —</option>
+                  {(addBatchForm.productionLineId ? getRecipesForLine(addBatchForm.productionLineId) : recipeOptions).map((r) => (
+                    <option key={r.id} value={r.name}>{r.name}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-0.5">Sales Order (base qty)</label>
+                <input
+                  type="number"
+                  min={0}
+                  value={addBatchForm.salesOrder}
+                  onChange={(e) => setAddBatchForm((p) => ({ ...p, salesOrder: e.target.value === '' ? '' : e.target.value }))}
+                  className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900"
+                  placeholder="e.g. 1090"
+                />
+                {/* <p className="text-xs text-gray-500 mt-0.5">Base order quantity. SO-CO Excess is computed as Sales Order − Carry Over Excess.</p> */}
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-0.5">Total Quantity</label>
+                <input
+                  type="number"
+                  min={0}
+                  value={addBatchForm.soQty}
+                  onChange={(e) => setAddBatchForm((p) => ({ ...p, soQty: e.target.value === '' ? '' : Number(e.target.value) }))}
+                  className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-0.5">Carry Over Excess</label>
+                <input
+                  type="number"
+                  min={0}
+                  value={addBatchForm.carryOverExcess}
+                  onChange={(e) => setAddBatchForm((p) => ({ ...p, carryOverExcess: e.target.value === '' ? '' : Number(e.target.value) }))}
+                  className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900"
+                  placeholder="0"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-0.5">SO-CO Excess</label>
+                <div className="w-full border border-gray-200 rounded px-2 py-1.5 bg-gray-100 text-gray-800">
+                  {Math.max(0, (Number(addBatchForm.salesOrder) || 0) - (Number(addBatchForm.carryOverExcess) || 0))}
+                </div>
+                {/* <p className="text-xs text-gray-500 mt-0.5">Computed: Sales Order − Carry Over Excess (read-only).</p> */}
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-0.5">Exchange for LOSS</label>
+                <input
+                  type="number"
+                  value={addBatchForm.exchangeForLoss}
+                  onChange={(e) => setAddBatchForm((p) => ({ ...p, exchangeForLoss: e.target.value === '' ? '' : Number(e.target.value) }))}
+                  className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-0.5">Excess</label>
+                <input
+                  type="number"
+                  min={0}
+                  value={addBatchForm.excess}
+                  onChange={(e) => setAddBatchForm((p) => ({ ...p, excess: e.target.value === '' ? '' : Number(e.target.value) }))}
+                  className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-0.5">Samples</label>
+                <input
+                  type="number"
+                  min={0}
+                  value={addBatchForm.samples}
+                  onChange={(e) => setAddBatchForm((p) => ({ ...p, samples: e.target.value === '' ? '' : Number(e.target.value) }))}
+                  className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900"
+                />
+              </div>
+              {(() => {
+                const computedSoCo = Math.max(0, (Number(addBatchForm.salesOrder) || 0) - (Number(addBatchForm.carryOverExcess) || 0));
+                const computedTheorOutput = addBatchForm.theorOutputOverride !== undefined && addBatchForm.theorOutputOverride !== '' && !Number.isNaN(Number(addBatchForm.theorOutputOverride))
+                  ? Number(addBatchForm.theorOutputOverride)
+                  : computedSoCo + (Number(addBatchForm.exchangeForLoss) || 0) + (Number(addBatchForm.excess) || 0) + (Number(addBatchForm.samples) || 2);
+                const yieldForProduct = addBatchForm.product && addBatchForm.productionLineId
+                  ? getYieldForProduct(addBatchForm.product, addBatchForm.productionLineId)
+                  : null;
+                const capacityForProduct = addBatchForm.product && addBatchForm.productionLineId
+                  ? getCapacityForProduct(addBatchForm.product, addBatchForm.productionLineId)
+                  : null;
+                const totalQty = Number(addBatchForm.soQty) || 0;
+                const numBatches = yieldForProduct != null && yieldForProduct > 0 && totalQty > 0
+                  ? Math.ceil(totalQty / yieldForProduct)
+                  : null;
+                const batchQuantities = numBatches != null && numBatches > 0 && yieldForProduct != null
+                  ? (() => {
+                      const arr = [];
+                      let rem = totalQty;
+                      for (let i = 0; i < numBatches; i++) {
+                        const pc = i < numBatches - 1 ? yieldForProduct : Math.min(yieldForProduct, rem);
+                        arr.push(pc);
+                        rem -= pc;
+                      }
+                      return arr;
+                    })()
+                  : [];
+                const selectedBatchIndex = numBatches != null && numBatches > 0
+                  ? Math.min(addBatchSelectedBatchIndex, numBatches - 1)
+                  : 0;
+                const quantityOfBatch = batchQuantities[selectedBatchIndex] ?? '—';
+                const batchOrdinal = (n) => {
+                  const s = ['th', 'st', 'nd', 'rd'];
+                  const v = n % 100;
+                  return n + (s[(v - 20) % 10] || s[v] || s[0]);
+                };
+                return (
+                  <>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-0.5">Theoretical Yield / Batch</label>
+                      <div className="w-full border border-gray-200 rounded px-2 py-1.5 bg-gray-100 text-gray-800">
+                        {yieldForProduct != null ? yieldForProduct : '—'}
+                      </div>
+                      <p className="text-xs text-gray-500 mt-0.5">From Capacity Profile (Production) for selected product (read-only).</p>
+                    </div>
+                    <div className="sm:col-span-2">
+                      <label className="block text-xs font-medium text-gray-600 mb-0.5">Theoretical Output</label>
+                      <input
+                        type="number"
+                        min={0}
+                        value={addBatchForm.theorOutputOverride}
+                        onChange={(e) => setAddBatchForm((p) => ({ ...p, theorOutputOverride: e.target.value }))}
+                        placeholder={String(Math.max(0, (Number(addBatchForm.salesOrder) || 0) - (Number(addBatchForm.carryOverExcess) || 0)) + (Number(addBatchForm.exchangeForLoss) || 0) + (Number(addBatchForm.excess) || 0) + (Number(addBatchForm.samples) || 2))}
+                        className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900"
+                      />
+                      <p className="text-xs text-gray-500 mt-0.5">SO-CO Excess + Exchange for LOSS + Excess + Samples. Leave empty to use computed, or type to override.</p>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-0.5">Number of batches</label>
+                      <select
+                        value={selectedBatchIndex}
+                        onChange={(e) => setAddBatchSelectedBatchIndex(Number(e.target.value))}
+                        className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900 bg-white"
+                      >
+                        {numBatches != null && numBatches > 0
+                          ? Array.from({ length: numBatches }, (_, i) => (
+                              <option key={i} value={i}>{batchOrdinal(i + 1)} batch</option>
+                            ))
+                          : <option value={0}>—</option>}
+                      </select>
+                      {/* <p className="text-xs text-gray-500 mt-0.5">
+                        Select which batch to view. Total batches: ceil(Total Quantity ÷ Theoretical Yield / Batch).
+                      </p> */}
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-0.5">Quantity of the Batch</label>
+                      <div className="w-full border border-gray-200 rounded px-2 py-1.5 bg-gray-100 text-gray-800">
+                        {quantityOfBatch}
+                      </div>
+                      <p className="text-xs text-gray-500 mt-0.5">Pieces for the selected batch (read-only). This becomes Batch Qty on the saved row.</p>
+                    </div>
+                  </>
+                );
+              })()}
+            </div>
+            <div className="p-4 border-t border-gray-200 flex justify-end gap-2">
+              <Dialog.Close asChild>
+                <button type="button" onClick={closeAddBatchModal} className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 text-sm font-medium hover:bg-gray-50">
+                  Cancel
+                </button>
+              </Dialog.Close>
+              <button
+                type="button"
+                onClick={handleAddBatchSubmit}
+                disabled={(() => {
+                  const totalQty = Number(addBatchForm.soQty) || 0;
+                  const yieldForProduct = addBatchForm.product && addBatchForm.productionLineId
+                    ? getYieldForProduct(addBatchForm.product, addBatchForm.productionLineId)
+                    : null;
+                  const capacityForProduct = addBatchForm.product && addBatchForm.productionLineId
+                    ? getCapacityForProduct(addBatchForm.product, addBatchForm.productionLineId)
+                    : null;
+                  const computedSoCo = Math.max(0, (Number(addBatchForm.salesOrder) || 0) - (Number(addBatchForm.carryOverExcess) || 0));
+                  const computedTheorOutput = addBatchForm.theorOutputOverride !== undefined && addBatchForm.theorOutputOverride !== '' && !Number.isNaN(Number(addBatchForm.theorOutputOverride))
+                    ? Number(addBatchForm.theorOutputOverride)
+                    : computedSoCo + (Number(addBatchForm.exchangeForLoss) || 0) + (Number(addBatchForm.excess) || 0) + (Number(addBatchForm.samples) || 2);
+                  const canUseTotalQty = totalQty > 0 && yieldForProduct != null && yieldForProduct > 0;
+                  const canUseTheorOutput = computedTheorOutput > 0 && capacityForProduct != null && capacityForProduct > 0;
+                  return !addBatchForm.product || (!canUseTotalQty && !canUseTheorOutput);
+                })()}
+                className="px-4 py-2 rounded-lg bg-primary text-white text-sm font-medium hover:bg-primary-dark disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Add batch
               </button>
             </div>
           </Dialog.Content>

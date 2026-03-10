@@ -309,6 +309,22 @@ export function deleteCapacityEntryForLine(lineId, entryId) {
   setCapacityProfileForLine(lineId, line.capacityProfile.filter((e) => e.id !== entryId));
 }
 
+/** Update all capacity profile entries that reference a product by its previous name (e.g. after renaming a recipe). */
+export function updateProductNameInCapacityProfiles(oldName, newName) {
+  const oldTrimmed = (oldName || '').trim();
+  const newTrimmed = (newName || '').trim();
+  if (!oldTrimmed || oldTrimmed === newTrimmed) return;
+  getLines().forEach((line) => {
+    const profile = getCapacityProfileForLine(line.id);
+    const updated = profile.map((e) =>
+      (e.productName || '').trim() === oldTrimmed ? { ...e, productName: newTrimmed } : e
+    );
+    if (updated.some((e, i) => (e.productName || '').trim() !== (profile[i].productName || '').trim())) {
+      setCapacityProfileForLine(line.id, updated);
+    }
+  });
+}
+
 /** Resolve capacity (pieces) by product name for a given line (used by Scheduling via Loaf Line). */
 export function getCapacityForProductFromLine(lineId, productName) {
   const entry = getCapacityEntryForProduct(lineId, productName);

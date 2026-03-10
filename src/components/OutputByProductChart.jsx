@@ -20,8 +20,9 @@ function useIsDesktop() {
   return isDesktop;
 }
 
-export function OutputByProductChart() {
-  const { rows } = usePlan();
+export function OutputByProductChart({ maxRows }) {
+  const { rows: fullRows } = usePlan();
+  const rows = typeof maxRows === 'number' && maxRows > 0 ? fullRows.slice(0, maxRows) : fullRows;
   const isDesktop = useIsDesktop();
 
   const data = rows.map((row) => ({
@@ -48,7 +49,7 @@ export function OutputByProductChart() {
             <CartesianGrid strokeDasharray="3 3" stroke="#eee" />
             <XAxis type="number" allowDecimals={false} />
             <YAxis type="category" dataKey="product" width={yAxisWidth} tick={{ fontSize: 12 }} />
-            <Tooltip formatter={(value) => [value, 'SO Qty']} />
+            <Tooltip formatter={(value) => [value, 'Total Qty']} />
             <Bar dataKey="output" fill={BAR_COLOR} name="Output" radius={[0, 4, 4, 0]} label={{ position: 'right', formatter: (v) => v }} />
           </BarChart>
         </ResponsiveContainer>
