@@ -5,8 +5,8 @@
 import { getPlan, updatePlan } from '../api/plan';
 import { isSupabaseConfigured } from '../lib/supabase';
 import { getRecipesForLine, getTotalProcessMinutesForLine } from '../store/recipeStore';
-import { getCapacityForProductFromLine, getYieldForProductFromLine, getLines } from '../store/productionLinesStore';
-import { recomputeEndTimesForRow, parseTimeToMinutes } from '../utils/stageDurations';
+import { getCapacityForProductFromLine, getYieldForProductFromLine, getLines, getStaggerMinutesForLine } from '../store/productionLinesStore';
+import { recomputeEndTimesForRow, parseTimeToMinutes, addMinutesToTime } from '../utils/stageDurations';
 
 const PLAN_ROWS_STORAGE_KEY = 'loaf-plan-rows';
 
@@ -339,6 +339,8 @@ export function addBatchesFromModal(payload) {
   const newRows = [];
   let currentStart = startSponge;
   let currentDate = dateStr;
+  const createdAtMs = Date.now();
+  const createdAtIso = new Date(createdAtMs).toISOString();
 
   const carryOverPayload = Number(payload.carryOverExcess) || 0;
   for (let i = 0; i < numBatches; i++) {
@@ -362,7 +364,8 @@ export function addBatchesFromModal(payload) {
     });
     const batchLabel = ordinal(state.rows.length + newRows.length + 1);
     const newRow = {
-      id: String(Date.now()) + '-' + i,
+      id: String(createdAtMs) + '-' + i,
+      createdAt: createdAtIso,
       productionLineId: lineId,
       date: currentDate,
       product: productName,
@@ -384,11 +387,21 @@ export function addBatchesFromModal(payload) {
       batch: batchLabel,
     };
     newRows.push(newRow);
-    currentStart = endBatch;
-    if (parseTimeToMinutes(endBatch) <= parseTimeToMinutes(prevStart) && endBatch !== prevStart) {
-      const d = new Date(currentDate);
-      d.setDate(d.getDate() + 1);
-      currentDate = toDateString(d);
+    const staggerMinutes = getStaggerMinutesForLine(lineId);
+    if (staggerMinutes > 0) {
+      currentStart = addMinutesToTime(prevStart, staggerMinutes);
+      if (parseTimeToMinutes(currentStart) < parseTimeToMinutes(prevStart) && currentStart !== prevStart) {
+        const d = new Date(currentDate);
+        d.setDate(d.getDate() + 1);
+        currentDate = toDateString(d);
+      }
+    } else {
+      currentStart = endBatch;
+      if (parseTimeToMinutes(endBatch) <= parseTimeToMinutes(prevStart) && endBatch !== prevStart) {
+        const d = new Date(currentDate);
+        d.setDate(d.getDate() + 1);
+        currentDate = toDateString(d);
+      }
     }
   }
 
@@ -415,8 +428,10 @@ export function addBatch(productionLineId) {
   });
   const batchLabel = ordinal(state.rows.length + 1);
   const rowDate = toDateString(state.planDate);
+  const createdAtIso = new Date().toISOString();
   const newRow = {
     id: String(Date.now()),
+    createdAt: createdAtIso,
     productionLineId: lineId,
     date: rowDate,
     product: defaultProduct,

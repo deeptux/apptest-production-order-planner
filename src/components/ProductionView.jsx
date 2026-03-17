@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { Plus, Pencil, Trash2, Check, X, Search } from 'lucide-react';
 import * as Tabs from '@radix-ui/react-tabs';
 import * as Dialog from '@radix-ui/react-dialog';
+import * as Tooltip from '@radix-ui/react-tooltip';
 import {
   getLines,
   getLineById,
@@ -21,10 +22,13 @@ import {
   getProfileTotalMinutes,
   addMixingProfile,
   deleteMixingProfile,
+  getTagForMixingProfile,
+  setTagForMixingProfile,
   getEquipmentForProfile,
   getEquipmentMinutesForProfile,
   setEquipmentMinutesForProfile,
   addEquipmentItemToProfile,
+  updateEquipmentItemInProfile,
   deleteEquipmentItemFromProfile,
   getProcessTimesForProfile,
   addProcessTimeToProfile,
@@ -32,7 +36,7 @@ import {
   deleteProcessTimeFromProfile,
 } from '../store/productionLinesStore';
 import { getRecipes } from '../store/recipeStore';
-import { getMachines, addMachine, updateMachine, deleteMachine, getMachinesForLineAndProcess, resetMachinesToDefaults } from '../store/machinesStore';
+import { getMachines, addMachine, updateMachine, deleteMachine, resetMachinesToDefaults } from '../store/machinesStore';
 
 function MachinesTabContent({ activeTab }) {
   const [machines, setMachinesState] = useState(() => getMachines());
@@ -41,39 +45,22 @@ function MachinesTabContent({ activeTab }) {
     if (activeTab === 'machines') setMachinesState(getMachines());
   }, [activeTab]);
   const [newName, setNewName] = useState('');
-  const [newProductionLineId, setNewProductionLineId] = useState('');
-  const [newProcessId, setNewProcessId] = useState('');
   const [editId, setEditId] = useState(null);
   const [editName, setEditName] = useState('');
-  const [editProductionLineId, setEditProductionLineId] = useState('');
-  const [editProcessId, setEditProcessId] = useState('');
-  const lines = getLines();
   const refresh = useCallback(() => setMachinesState(getMachines()), []);
   const handleAdd = useCallback(() => {
     if (!newName.trim()) return;
-    addMachine({
-      name: newName.trim(),
-      productionLineId: newProductionLineId || null,
-      processId: newProcessId || null,
-    });
+    addMachine(newName.trim());
     setNewName('');
-    setNewProductionLineId('');
-    setNewProcessId('');
     refresh();
-  }, [newName, newProductionLineId, newProcessId, refresh]);
+  }, [newName, refresh]);
   const handleSave = useCallback(() => {
     if (!editId || !editName.trim()) return;
-    updateMachine(editId, {
-      name: editName.trim(),
-      productionLineId: editProductionLineId || null,
-      processId: editProcessId || null,
-    });
+    updateMachine(editId, { name: editName.trim() });
     setEditId(null);
     setEditName('');
-    setEditProductionLineId('');
-    setEditProcessId('');
     refresh();
-  }, [editId, editName, editProductionLineId, editProcessId, refresh]);
+  }, [editId, editName, refresh]);
   const handleDelete = useCallback((id) => {
     if (!window.confirm('Remove this machine/equipment from the list?')) return;
     deleteMachine(id);
@@ -84,12 +71,6 @@ function MachinesTabContent({ activeTab }) {
     resetMachinesToDefaults();
     refresh();
   }, [refresh]);
-  const lineName = (id) => (id ? (getLineById(id)?.name ?? id) : '—');
-  const processName = (lineId, processId) => {
-    if (!lineId || !processId) return '—';
-    const procs = getProcessesForLine(lineId);
-    return procs.find((p) => p.id === processId)?.name ?? '—';
-  };
   const searchLower = machineSearch.trim().toLowerCase();
   const filteredMachines = searchLower
     ? machines.filter((m) => m.name.toLowerCase().includes(searchLower))
@@ -98,7 +79,7 @@ function MachinesTabContent({ activeTab }) {
   return (
     <div className="p-3 sm:p-4 flex flex-col min-h-0">
       <p className="text-xs sm:text-sm 2xl:text-base text-muted mb-4">
-        Assign machines to a production line and process (optional). When assigned, they appear under that line’s process in the Production tab.
+        Maintain a master list of machines and equipment used by process profiles on the Production tab.
       </p>
       <div className="flex flex-col min-w-0 min-h-0 flex-1">
         <div className="flex items-center justify-end gap-2 mb-2">
@@ -126,8 +107,6 @@ function MachinesTabContent({ activeTab }) {
             <thead className="sticky top-0 z-10 bg-surface-card-warm shadow-[0_1px_0_0_rgba(0,0,0,0.06)]">
               <tr className="border-b border-gray-200">
                 <th className="text-left py-2 sm:py-3 px-3 sm:px-4 font-semibold text-gray-700 whitespace-nowrap bg-surface-card-warm">Machine / equipment</th>
-                <th className="text-left py-2 sm:py-3 px-3 sm:px-4 font-semibold text-gray-700 whitespace-nowrap bg-surface-card-warm">Production Line</th>
-                <th className="text-left py-2 sm:py-3 px-3 sm:px-4 font-semibold text-gray-700 whitespace-nowrap bg-surface-card-warm">Process Line</th>
                 <th className="text-left py-2 sm:py-3 px-3 sm:px-4 w-24 sm:w-28 whitespace-nowrap bg-surface-card-warm">Actions</th>
               </tr>
             </thead>
@@ -143,38 +122,12 @@ function MachinesTabContent({ activeTab }) {
                 />
               </td>
               <td className="py-2 sm:py-2.5 px-3 sm:px-4">
-                <select
-                  value={newProductionLineId}
-                  onChange={(e) => { setNewProductionLineId(e.target.value); setNewProcessId(''); }}
-                  className="border border-gray-300 rounded-lg px-2 py-1 text-inherit max-w-[180px]"
-                >
-                  <option value="">—</option>
-                  {lines.map((line) => (
-                    <option key={line.id} value={line.id}>{line.name}</option>
-                  ))}
-                </select>
-              </td>
-              <td className="py-2 sm:py-2.5 px-3 sm:px-4">
-                <select
-                  value={newProcessId}
-                  onChange={(e) => setNewProcessId(e.target.value)}
-                  disabled={!newProductionLineId}
-                  className="border border-gray-300 rounded-lg px-2 py-1 text-inherit max-w-[180px] disabled:opacity-60 disabled:cursor-not-allowed"
-                >
-                  <option value="">—</option>
-                  {newProductionLineId ? getProcessesForLine(newProductionLineId).map((p) => (
-                    <option key={p.id} value={p.id}>{p.name}</option>
-                  )) : null}
-                </select>
-              </td>
-              <td className="py-2 sm:py-2.5 px-3 sm:px-4">
                 <button type="button" onClick={handleAdd} disabled={!newName.trim()} className="inline-flex items-center gap-1 px-3 py-1 rounded-lg bg-primary text-white text-xs sm:text-sm font-medium disabled:opacity-50">
                   <Plus className="w-4 h-4" /> Add
                 </button>
               </td>
             </tr>
             {filteredMachines.map((m) => {
-              const procsForEdit = editProductionLineId ? getProcessesForLine(editProductionLineId) : [];
               return (
               <tr key={m.id} className="border-b border-gray-100">
                 {editId === m.id ? (
@@ -188,45 +141,18 @@ function MachinesTabContent({ activeTab }) {
                       />
                     </td>
                     <td className="py-2 sm:py-2.5 px-3 sm:px-4">
-                      <select
-                        value={editProductionLineId}
-                        onChange={(e) => { setEditProductionLineId(e.target.value); setEditProcessId(''); }}
-                        className="border border-gray-300 rounded-lg px-2 py-1 text-inherit max-w-[180px]"
-                      >
-                        <option value="">—</option>
-                        {lines.map((line) => (
-                          <option key={line.id} value={line.id}>{line.name}</option>
-                        ))}
-                      </select>
-                    </td>
-                    <td className="py-2 sm:py-2.5 px-3 sm:px-4">
-                      <select
-                        value={editProcessId}
-                        onChange={(e) => setEditProcessId(e.target.value)}
-                        disabled={!editProductionLineId}
-                        className="border border-gray-300 rounded-lg px-2 py-1 text-inherit max-w-[180px] disabled:opacity-60 disabled:cursor-not-allowed"
-                      >
-                        <option value="">—</option>
-                        {procsForEdit.map((p) => (
-                          <option key={p.id} value={p.id}>{p.name}</option>
-                        ))}
-                      </select>
-                    </td>
-                    <td className="py-2 sm:py-2.5 px-3 sm:px-4">
                       <div className="flex gap-1">
                         <button type="button" onClick={handleSave} className="px-2 py-1 rounded-lg bg-primary text-white text-xs font-medium">Save</button>
-                        <button type="button" onClick={() => { setEditId(null); setEditName(''); setEditProductionLineId(''); setEditProcessId(''); }} className="px-2 py-1 rounded-lg border border-gray-300 text-xs font-medium">Cancel</button>
+                        <button type="button" onClick={() => { setEditId(null); setEditName(''); }} className="px-2 py-1 rounded-lg border border-gray-300 text-xs font-medium">Cancel</button>
                       </div>
                     </td>
                   </>
                 ) : (
                   <>
                     <td className="py-2 sm:py-2.5 px-3 sm:px-4 text-gray-800">{m.name}</td>
-                    <td className="py-2 sm:py-2.5 px-3 sm:px-4 text-gray-600">{lineName(m.productionLineId)}</td>
-                    <td className="py-2 sm:py-2.5 px-3 sm:px-4 text-gray-600">{processName(m.productionLineId, m.processId)}</td>
                     <td className="py-2 sm:py-2.5 px-3 sm:px-4">
                       <div className="flex gap-1">
-                        <button type="button" onClick={() => { setEditId(m.id); setEditName(m.name); setEditProductionLineId(m.productionLineId || ''); setEditProcessId(m.processId || ''); }} className="p-1 rounded-lg border border-gray-300 hover:bg-gray-100" aria-label="Edit"><Pencil className="w-4 h-4" /></button>
+                        <button type="button" onClick={() => { setEditId(m.id); setEditName(m.name); }} className="p-1 rounded-lg border border-gray-300 hover:bg-gray-100" aria-label="Edit"><Pencil className="w-4 h-4" /></button>
                         <button type="button" onClick={() => handleDelete(m.id)} className="p-1 rounded-lg border border-gray-300 hover:bg-red-50 text-red-600" aria-label="Delete"><Trash2 className="w-4 h-4" /></button>
                       </div>
                     </td>
@@ -281,12 +207,19 @@ export default function ProductionView() {
   const [processEditName, setProcessEditName] = useState('');
   const [newProcessTimeName, setNewProcessTimeName] = useState('');
   const [newProcessTimeMinutes, setNewProcessTimeMinutes] = useState('');
+  const [newProcessTimeIsPipelineStagger, setNewProcessTimeIsPipelineStagger] = useState(false);
   const [processTimeEdit, setProcessTimeEdit] = useState(null); // { lineId, processId, processTimeId }
-  const [processTimeDraft, setProcessTimeDraft] = useState(null); // { name, minutes }
+  const [processTimeDraft, setProcessTimeDraft] = useState(null); // { name, minutes, isPipelineStagger }
   const [activeMainTab, setActiveMainTab] = useState('production');
   const [selectedMixingProfileId, setSelectedMixingProfileId] = useState({}); // key: `${line.id}-${proc.id}` -> profileId
   const [processTabValueByLine, setProcessTabValueByLine] = useState({}); // key: line.id -> tab value (proc.id or 'add-process')
   const [processTimeDuplicateNameError, setProcessTimeDuplicateNameError] = useState(false);
+  const [stepOrderDuplicateError, setStepOrderDuplicateError] = useState(null);
+  const [tagModalOpen, setTagModalOpen] = useState(false);
+  const [tagDraft, setTagDraft] = useState('');
+  const [tagTarget, setTagTarget] = useState(null); // { lineId, processId, profileId } | null
+
+  const pipelineHelpText = 'Marks a step as a pipelining breakpoint. This enables pipelined batching so multiple batches can be executed within the same process before the previous batch finishes the entire line.';
 
   const selectedLine = getLineById(selectedLineId) ?? lines[0];
   const processes = selectedLine ? getProcessesForLine(selectedLine.id) : [];
@@ -302,6 +235,13 @@ export default function ProductionView() {
   useEffect(() => {
     if (activeMainTab === 'production') refreshMachines();
   }, [activeMainTab, refreshMachines]);
+
+  // Auto-dismiss duplicate order error after 4s.
+  useEffect(() => {
+    if (!stepOrderDuplicateError) return undefined;
+    const t = setTimeout(() => setStepOrderDuplicateError(null), 4000);
+    return () => clearTimeout(t);
+  }, [stepOrderDuplicateError]);
   // Default each process's mixing profile dropdown to the first profile when profiles exist and none is selected
   useEffect(() => {
     setSelectedMixingProfileId((prev) => {
@@ -560,13 +500,13 @@ export default function ProductionView() {
             value="production"
             className="px-3 py-2 sm:px-4 sm:py-2.5 text-xs sm:text-sm md:text-base font-medium rounded-t-lg transition-colors shrink-0 data-[state=active]:bg-primary data-[state=active]:text-white data-[state=inactive]:text-gray-700 data-[state=inactive]:hover:bg-gray-200/50"
           >
-            Production
+            1) Production
           </Tabs.Trigger>
           <Tabs.Trigger
             value="machines"
             className="px-3 py-2 sm:px-4 sm:py-2.5 text-xs sm:text-sm md:text-base font-medium rounded-t-lg transition-colors shrink-0 data-[state=active]:bg-primary data-[state=active]:text-white data-[state=inactive]:text-gray-700 data-[state=inactive]:hover:bg-gray-200/50"
           >
-            Machines
+            2) Machines/Equipment
           </Tabs.Trigger>
         </Tabs.List>
 
@@ -1093,6 +1033,29 @@ export default function ProductionView() {
                                     <label className="text-xs sm:text-sm text-gray-600">
                                       {proc.name} profile:
                                     </label>
+                                    {selectedProfileId && (
+                                      <>
+                                        <select
+                                          value={getTagForMixingProfile(line.id, proc.id, selectedProfileId) || ''}
+                                          onChange={(e) => { setTagForMixingProfile(line.id, proc.id, selectedProfileId, e.target.value); setLinesState(getLines()); }}
+                                          className="border border-gray-300 rounded-lg px-2 py-1.5 text-xs sm:text-sm bg-white min-w-[140px]"
+                                          title="Tag this process profile"
+                                        >
+                                          <option value="">— Tag —</option>
+                                          {(() => {
+                                            const current = getTagForMixingProfile(line.id, proc.id, selectedProfileId) || '';
+                                            return current ? <option value={current}>{current}</option> : null;
+                                          })()}
+                                        </select>
+                                        <button
+                                          type="button"
+                                          onClick={() => { setTagDraft(''); setTagTarget({ lineId: line.id, processId: proc.id, profileId: selectedProfileId }); setTagModalOpen(true); }}
+                                          className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-gray-300 bg-white text-gray-700 text-xs sm:text-sm font-medium hover:bg-gray-100"
+                                        >
+                                          <Plus className="w-4 h-4" /> Add tag
+                                        </button>
+                                      </>
+                                    )}
                                     <select
                                       value={selectedProfileId ?? ''}
                                       onChange={(e) => setSelectedMixingProfileId((p) => ({ ...p, [key]: e.target.value || null }))}
@@ -1139,8 +1102,11 @@ export default function ProductionView() {
                               {selectedProfileId ? (
                               <section className="border border-gray-200 rounded-xl bg-gray-50/50 p-3 sm:p-4 mt-2 flex flex-col min-w-0" aria-label={`Mixing profile ${profileTotalMinutes} min`}>
                                 <h4 className="text-xs sm:text-sm md:text-base font-semibold text-gray-800 mb-3 shrink-0">Mixing profile — {profileTotalMinutes} min total</h4>
+                                {stepOrderDuplicateError && (
+                                  <p className="text-xs sm:text-sm text-red-600 mb-2">{stepOrderDuplicateError}</p>
+                                )}
                               <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6 min-w-0">
-                                <section className="border border-gray-200 rounded-lg bg-surface-card overflow-visible min-w-0 text-xs sm:text-sm md:text-base lg:text-lg xl:text-xl 2xl:text-2xl flex flex-col min-h-0">
+                                <section className="border border-gray-200 rounded-lg bg-surface-card overflow-visible min-w-0 text-xs sm:text-sm md:text-sm lg:text-base xl:text-base 2xl:text-lg flex flex-col min-h-0">
                                   <div className="p-2 sm:p-3 border-b border-gray-200 bg-surface-card-warm shrink-0">
                                     <h4 className="font-semibold text-gray-800 text-inherit">Machines / equipment</h4>
                                     <p className="text-muted mt-0.5 text-[0.65rem] sm:text-xs md:text-xs">Add machines and set duration (minutes) for each. Click Edit to change.</p>
@@ -1150,14 +1116,32 @@ export default function ProductionView() {
                               <table className="w-full border-collapse text-inherit">
                                 <thead>
                                   <tr className="border-b border-gray-200">
-                                    <th className="text-left py-2 px-2 font-semibold text-gray-800">Machine Name</th>
-                                    <th className="text-left py-2 px-2 font-semibold text-gray-800 whitespace-nowrap">Duration (mins)</th>
-                                    <th className="text-left py-2 px-2 w-24 sm:w-28 font-semibold text-gray-800">Actions</th>
+                                    <th className="text-left py-2 px-2 font-semibold text-gray-800 whitespace-nowrap text-[0.7rem] sm:text-xs lg:text-sm">Sequence</th>
+                                    <th className="text-left py-2 px-2 font-semibold text-gray-800 text-[0.7rem] sm:text-xs lg:text-sm">Machine Name</th>
+                                    <th className="text-left py-2 px-2 font-semibold text-gray-800 whitespace-nowrap text-[0.7rem] sm:text-xs lg:text-sm">Duration</th>
+                                    <th className="text-left py-2 px-2 font-semibold text-gray-800 whitespace-nowrap text-[0.7rem] sm:text-xs lg:text-sm">
+                                      <Tooltip.Provider delayDuration={200}>
+                                        <Tooltip.Root>
+                                          <Tooltip.Trigger asChild>
+                                            <span className="inline-flex items-center gap-1 cursor-help">
+                                              Pipeline <span className="inline-flex items-center justify-center w-4 h-4 rounded-full border border-gray-300 text-[0.65rem] leading-none text-gray-700">?</span>
+                                            </span>
+                                          </Tooltip.Trigger>
+                                          <Tooltip.Portal>
+                                            <Tooltip.Content side="top" sideOffset={6} className="z-50 max-w-[90vw] rounded-lg border border-gray-200 bg-white px-3 py-2 shadow-lg text-gray-900 text-xs sm:text-sm">
+                                              {pipelineHelpText}
+                                            </Tooltip.Content>
+                                          </Tooltip.Portal>
+                                        </Tooltip.Root>
+                                      </Tooltip.Provider>
+                                    </th>
+                                    <th className="text-left py-2 px-2 w-24 sm:w-28 font-semibold text-gray-800 text-[0.7rem] sm:text-xs lg:text-sm">Actions</th>
                                   </tr>
                                 </thead>
                                 <tbody>
                                   {selectedLineId === line.id && selectedProfileId && (
                                     <tr className="border-b border-gray-200 bg-gray-50/80">
+                                      <td className="py-2 px-2 text-xs text-muted">—</td>
                                       <td className="py-2 px-2">
                                         <div
                                           ref={equipmentDropdownOpen?.type === 'add' && equipmentDropdownOpen.key === key ? equipmentDropdownRef : null}
@@ -1187,6 +1171,7 @@ export default function ProductionView() {
                                           title="Duration (minutes)"
                                         />
                                       </td>
+                                      <td className="py-2 px-2 text-xs text-muted">—</td>
                                       <td className="py-2 px-2">
                                         <button
                                           type="button"
@@ -1201,13 +1186,40 @@ export default function ProductionView() {
                                   )}
                                   {equipment.length === 0 ? (
                                     <tr>
-                                      <td colSpan={3} className="py-3 px-2 text-xs sm:text-sm text-muted">No machines added yet. Use the Add row above.</td>
+                                      <td colSpan={5} className="py-3 px-2 text-xs sm:text-sm text-muted">No machines added yet. Use the Add row above.</td>
                                     </tr>
                                   ) : (
                                     equipment.map((item) => {
                                     const minutesVal = getEquipmentMinutesForProfile(line.id, proc.id, selectedProfileId, item.id);
                                     return (
                                       <tr key={item.id} className="border-b border-gray-100">
+                                        <td className="py-2 px-2">
+                                          <input
+                                            type="number"
+                                            min={1}
+                                            value={item.order ?? ''}
+                                            onChange={(e) => {
+                                              setStepOrderDuplicateError(null);
+                                              const nextOrder = e.target.value === '' ? null : Number(e.target.value);
+                                              if (nextOrder != null && !Number.isNaN(Number(nextOrder))) {
+                                                const eq = getEquipmentForProfile(line.id, proc.id, selectedProfileId);
+                                                const pts = getProcessTimesForProfile(line.id, proc.id, selectedProfileId);
+                                                const used = new Set([
+                                                  ...eq.filter((x) => x.id !== item.id).map((x) => Number(x.order)).filter((n) => !Number.isNaN(n) && n != null),
+                                                  ...pts.map((x) => Number(x.order)).filter((n) => !Number.isNaN(n) && n != null),
+                                                ]);
+                                                if (used.has(Number(nextOrder))) {
+                                                  setStepOrderDuplicateError(`Order #${Number(nextOrder)} is already used in this profile. Choose a unique number across Machines/Equipment and Process times.`);
+                                                  return;
+                                                }
+                                              }
+                                              updateEquipmentItemInProfile(line.id, proc.id, selectedProfileId, item.id, { order: nextOrder });
+                                              setLinesState(getLines());
+                                            }}
+                                            className="border border-gray-300 rounded-lg px-2 py-1 w-16 text-xs sm:text-sm"
+                                            title="Step order (sequence number)"
+                                          />
+                                        </td>
                                         <td className="py-2 px-2">
                                         {equipmentEdit?.lineId === line.id && equipmentEdit?.sectionId === proc.id && equipmentEdit?.itemId === item.id ? (
                                           <>
@@ -1254,6 +1266,18 @@ export default function ProductionView() {
                                         )}
                                         </td>
                                         <td className="py-2 px-2">
+                                          <input
+                                            type="checkbox"
+                                            checked={!!item.isPipelineStagger}
+                                            onChange={(e) => {
+                                              updateEquipmentItemInProfile(line.id, proc.id, selectedProfileId, item.id, { isPipelineStagger: e.target.checked });
+                                              setLinesState(getLines());
+                                            }}
+                                            disabled={equipmentEdit?.lineId === line.id && equipmentEdit?.sectionId === proc.id && equipmentEdit?.itemId === item.id}
+                                            title="When enabled, pipelined batching uses the cumulative minutes up to this step as the stagger."
+                                          />
+                                        </td>
+                                        <td className="py-2 px-2">
                                         {selectedLineId === line.id && !(equipmentEdit?.lineId === line.id && equipmentEdit?.sectionId === proc.id && equipmentEdit?.itemId === item.id) && (
                                           <>
                                             <button type="button" onClick={() => { setEquipmentEdit({ lineId: line.id, sectionId: proc.id, itemId: item.id }); setEquipmentDraft({ name: item.name, machineId: item.id, minutes: minutesVal ?? '' }); }} className="p-1 rounded-lg border border-gray-300 hover:bg-gray-100" aria-label="Edit"><Pencil className="w-4 h-4 inline" /></button>
@@ -1271,7 +1295,7 @@ export default function ProductionView() {
                                   </div>
                                 </section>
 
-                                <section className="border border-gray-200 rounded-lg bg-surface-card overflow-hidden min-w-0 text-xs sm:text-sm md:text-base lg:text-lg xl:text-xl 2xl:text-2xl flex flex-col min-h-0">
+                                <section className="border border-gray-200 rounded-lg bg-surface-card overflow-hidden min-w-0 text-xs sm:text-sm md:text-sm lg:text-base xl:text-base 2xl:text-lg flex flex-col min-h-0">
                                   <div className="p-2 sm:p-3 border-b border-gray-200 bg-surface-card-warm shrink-0">
                                     <h4 className="font-semibold text-gray-800 text-inherit">Process times</h4>
                                     <p className="text-muted mt-0.5 text-[0.65rem] sm:text-xs md:text-xs">Add process time steps (e.g. Gap, Bench Floor Time). Click Edit to change.</p>
@@ -1289,14 +1313,32 @@ export default function ProductionView() {
                                     <table className="w-full border-collapse text-inherit">
                                       <thead>
                                         <tr className="border-b border-gray-200">
-                                          <th className="text-left py-2 px-2 font-semibold text-gray-800">Process time name</th>
-                                          <th className="text-left py-2 px-2 font-semibold text-gray-800 whitespace-nowrap">Duration (mins)</th>
-                                          <th className="text-left py-2 px-2 w-24 sm:w-28 font-semibold text-gray-800">Actions</th>
+                                          <th className="text-left py-2 px-2 font-semibold text-gray-800 whitespace-nowrap text-[0.7rem] sm:text-xs lg:text-sm">Sequence</th>
+                                          <th className="text-left py-2 px-2 font-semibold text-gray-800 text-[0.7rem] sm:text-xs lg:text-sm">Process time name</th>
+                                          <th className="text-left py-2 px-2 font-semibold text-gray-800 whitespace-nowrap text-[0.7rem] sm:text-xs lg:text-sm">Duration</th>
+                                          <th className="text-left py-2 px-2 font-semibold text-gray-800 whitespace-nowrap text-[0.7rem] sm:text-xs lg:text-sm">
+                                            <Tooltip.Provider delayDuration={200}>
+                                              <Tooltip.Root>
+                                                <Tooltip.Trigger asChild>
+                                                  <span className="inline-flex items-center gap-1 cursor-help">
+                                                    Pipeline <span className="inline-flex items-center justify-center w-4 h-4 rounded-full border border-gray-300 text-[0.65rem] leading-none text-gray-700">?</span>
+                                                  </span>
+                                                </Tooltip.Trigger>
+                                                <Tooltip.Portal>
+                                                  <Tooltip.Content side="top" sideOffset={6} className="z-50 max-w-[90vw] rounded-lg border border-gray-200 bg-white px-3 py-2 shadow-lg text-gray-900 text-xs sm:text-sm">
+                                                    {pipelineHelpText}
+                                                  </Tooltip.Content>
+                                                </Tooltip.Portal>
+                                              </Tooltip.Root>
+                                            </Tooltip.Provider>
+                                          </th>
+                                          <th className="text-left py-2 px-2 w-24 sm:w-28 font-semibold text-gray-800 text-[0.7rem] sm:text-xs lg:text-sm">Actions</th>
                                         </tr>
                                       </thead>
                                       <tbody>
                                     {selectedLineId === line.id && selectedProfileId && (
                                       <tr className="border-b border-gray-200 bg-gray-50/80">
+                                        <td className="py-2 px-2 text-xs text-muted">—</td>
                                         <td className="py-2 px-2">
                                           <input
                                             type="text"
@@ -1320,16 +1362,31 @@ export default function ProductionView() {
                                           />
                                         </td>
                                         <td className="py-2 px-2">
+                                          <label className="inline-flex items-center gap-2 text-xs sm:text-sm text-gray-700">
+                                            <input
+                                              type="checkbox"
+                                              checked={!!newProcessTimeIsPipelineStagger}
+                                              onChange={(e) => setNewProcessTimeIsPipelineStagger(e.target.checked)}
+                                              disabled={!!processTimeEdit?.processTimeId}
+                                            />
+                                          </label>
+                                        </td>
+                                        <td className="py-2 px-2">
                                           <button
                                             type="button"
                                             disabled={!newProcessTimeName.trim()}
                                             onClick={() => {
                                               setProcessTimeDuplicateNameError(false);
-                                              const res = addProcessTimeToProfile(line.id, proc.id, selectedProfileId, { name: newProcessTimeName.trim(), minutes: newProcessTimeMinutes === '' || Number.isNaN(Number(newProcessTimeMinutes)) ? 0 : Number(newProcessTimeMinutes) });
+                                              const res = addProcessTimeToProfile(line.id, proc.id, selectedProfileId, {
+                                                name: newProcessTimeName.trim(),
+                                                minutes: newProcessTimeMinutes === '' || Number.isNaN(Number(newProcessTimeMinutes)) ? 0 : Number(newProcessTimeMinutes),
+                                                isPipelineStagger: !!newProcessTimeIsPipelineStagger,
+                                              });
                                               if (res?.duplicateName) { setProcessTimeDuplicateNameError(true); return; }
                                               setLinesState(getLines());
                                               setNewProcessTimeName('');
                                               setNewProcessTimeMinutes('');
+                                              setNewProcessTimeIsPipelineStagger(false);
                                             }}
                                             className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-primary text-white text-xs sm:text-sm font-medium shrink-0 disabled:opacity-50"
                                           >
@@ -1341,11 +1398,38 @@ export default function ProductionView() {
                                     {processTimes.map((pt) => (
                                       <tr key={pt.id} className="border-b border-gray-100">
                                         <td className="py-2 px-2">
+                                          <input
+                                            type="number"
+                                            min={1}
+                                            value={pt.order ?? ''}
+                                            onChange={(e) => {
+                                              setStepOrderDuplicateError(null);
+                                              const nextOrder = e.target.value === '' ? null : Number(e.target.value);
+                                              if (nextOrder != null && !Number.isNaN(Number(nextOrder))) {
+                                                const eq = getEquipmentForProfile(line.id, proc.id, selectedProfileId);
+                                                const pts = getProcessTimesForProfile(line.id, proc.id, selectedProfileId);
+                                                const used = new Set([
+                                                  ...eq.map((x) => Number(x.order)).filter((n) => !Number.isNaN(n) && n != null),
+                                                  ...pts.filter((x) => x.id !== pt.id).map((x) => Number(x.order)).filter((n) => !Number.isNaN(n) && n != null),
+                                                ]);
+                                                if (used.has(Number(nextOrder))) {
+                                                  setStepOrderDuplicateError(`Order #${Number(nextOrder)} is already used in this profile. Choose a unique number across Machines/Equipment and Process times.`);
+                                                  return;
+                                                }
+                                              }
+                                              updateProcessTimeInProfile(line.id, proc.id, selectedProfileId, pt.id, { order: nextOrder });
+                                              setLinesState(getLines());
+                                            }}
+                                            className="border border-gray-300 rounded-lg px-2 py-1 w-16 text-xs sm:text-sm"
+                                            title="Step order (sequence number)"
+                                          />
+                                        </td>
+                                        <td className="py-2 px-2">
                                           {isEditingPt && processTimeEdit?.processTimeId === pt.id && processTimeDraft ? (
                                             <input
                                               type="text"
                                               value={processTimeDraft.name}
-                                              onChange={(e) => { setProcessTimeDraft((p) => (p ? { ...p, name: e.target.value } : { name: e.target.value, minutes: 0 })); setProcessTimeDuplicateNameError(false); }}
+                                              onChange={(e) => { setProcessTimeDraft((p) => (p ? { ...p, name: e.target.value } : { name: e.target.value, minutes: 0, isPipelineStagger: false })); setProcessTimeDuplicateNameError(false); }}
                                               className="border border-gray-300 rounded-lg px-2 py-1 text-xs sm:text-sm min-w-[140px]"
                                               placeholder="Name"
                                             />
@@ -1371,12 +1455,24 @@ export default function ProductionView() {
                                           )}
                                         </td>
                                         <td className="py-2 px-2">
+                                          <input
+                                            type="checkbox"
+                                            checked={!!pt.isPipelineStagger}
+                                            onChange={(e) => {
+                                              updateProcessTimeInProfile(line.id, proc.id, selectedProfileId, pt.id, { isPipelineStagger: e.target.checked });
+                                              setLinesState(getLines());
+                                            }}
+                                            disabled={isEditingPt && processTimeEdit?.processTimeId === pt.id}
+                                            title="When enabled, this process time's minutes will be used as the stagger for pipelined batching on this line."
+                                          />
+                                        </td>
+                                        <td className="py-2 px-2">
                                           {isEditingPt && processTimeEdit?.processTimeId === pt.id && processTimeDraft ? (
                                             <>
                                               <button
                                                 type="button"
                                                 onClick={() => {
-                                                  const res = updateProcessTimeInProfile(line.id, proc.id, selectedProfileId, pt.id, { name: processTimeDraft.name, minutes: processTimeDraft.minutes });
+                                                  const res = updateProcessTimeInProfile(line.id, proc.id, selectedProfileId, pt.id, { name: processTimeDraft.name, minutes: processTimeDraft.minutes, isPipelineStagger: !!processTimeDraft.isPipelineStagger });
                                                   if (res?.duplicateName) { setProcessTimeDuplicateNameError(true); return; }
                                                   setProcessTimeDuplicateNameError(false);
                                                   setLinesState(getLines());
@@ -1392,7 +1488,7 @@ export default function ProductionView() {
                                           ) : (
                                             selectedLineId === line.id && (
                                               <>
-                                                <button type="button" onClick={() => { setProcessTimeEdit({ lineId: line.id, processId: proc.id, processTimeId: pt.id }); setProcessTimeDraft({ name: pt.name, minutes: pt.minutes }); setProcessTimeDuplicateNameError(false); }} className="p-1 rounded-lg border border-gray-300 hover:bg-gray-100" aria-label="Edit"><Pencil className="w-4 h-4" /></button>
+                                                <button type="button" onClick={() => { setProcessTimeEdit({ lineId: line.id, processId: proc.id, processTimeId: pt.id }); setProcessTimeDraft({ name: pt.name, minutes: pt.minutes, isPipelineStagger: !!pt.isPipelineStagger }); setProcessTimeDuplicateNameError(false); }} className="p-1 rounded-lg border border-gray-300 hover:bg-gray-100" aria-label="Edit"><Pencil className="w-4 h-4" /></button>
                                                 <button type="button" onClick={() => { deleteProcessTimeFromProfile(line.id, proc.id, selectedProfileId, pt.id); setLinesState(getLines()); }} className="ml-1 p-1 rounded-lg border border-gray-300 hover:bg-red-50 text-red-600" aria-label="Delete"><Trash2 className="w-4 h-4" /></button>
                                               </>
                                             )
@@ -1414,6 +1510,7 @@ export default function ProductionView() {
                                 <p className="text-muted mt-1 text-[0.65rem] sm:text-xs md:text-sm">
                                   Complex process times like Packaging derived from strokes, capacity per hour and batch quantity or Baking&apos;s Rack Loading per rack and quantity per rack would be included in actual development below this section.
                                 </p>
+                                <p className="mt-2 text-xs sm:text-sm font-medium text-gray-700">Coming soon. Not included in demo</p>
                               </section>
                               </section>
                               ) : (
@@ -1440,6 +1537,49 @@ export default function ProductionView() {
           <MachinesTabContent activeTab={activeMainTab} />
         </Tabs.Content>
       </Tabs.Root>
+
+      <Dialog.Root open={tagModalOpen} onOpenChange={setTagModalOpen}>
+        <Dialog.Portal>
+          <Dialog.Overlay className="fixed inset-0 bg-black/50 z-40" />
+          <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-full max-w-md -translate-x-1/2 -translate-y-1/2 rounded-lg border border-gray-200 bg-white p-4 sm:p-6 shadow-lg">
+            <Dialog.Title className="text-base sm:text-lg font-semibold text-gray-900">Add tag</Dialog.Title>
+            <p className="text-xs sm:text-sm text-gray-600 mt-1">Tags can be assigned to process profiles for organization and filtering.</p>
+            <div className="mt-4">
+              <label className="block text-xs font-medium text-gray-600 mb-1">Tag name</label>
+              <input
+                type="text"
+                value={tagDraft}
+                onChange={(e) => setTagDraft(e.target.value)}
+                placeholder="e.g. EB, WWL, Raisin"
+                className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900"
+              />
+            </div>
+            <div className="mt-4 flex justify-end gap-2">
+              <Dialog.Close asChild>
+                <button type="button" className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 text-sm font-medium hover:bg-gray-50">
+                  Cancel
+                </button>
+              </Dialog.Close>
+              <button
+                type="button"
+                onClick={() => {
+                  const trimmed = tagDraft.trim();
+                  if (!trimmed || !tagTarget) return;
+                  setTagForMixingProfile(tagTarget.lineId, tagTarget.processId, tagTarget.profileId, trimmed);
+                  setLinesState(getLines());
+                  setTagModalOpen(false);
+                  setTagDraft('');
+                  setTagTarget(null);
+                }}
+                disabled={!tagDraft.trim() || !tagTarget}
+                className="px-4 py-2 rounded-lg bg-primary text-white text-sm font-medium hover:bg-primary-dark disabled:opacity-50"
+              >
+                Save tag
+              </button>
+            </div>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
     </div>
   );
 }

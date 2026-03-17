@@ -28,6 +28,9 @@ const DEFAULT_LOAF_CAPACITY = [
 ];
 
 function normalizeLine(l) {
+  const profileTags = Array.isArray(l.profileTags)
+    ? l.profileTags.map((t) => String(t ?? '').trim()).filter(Boolean)
+    : [];
   const capacityProfile = Array.isArray(l.capacityProfile)
     ? l.capacityProfile.map((e) => ({
         id: e.id || `cap-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -65,11 +68,74 @@ function normalizeLine(l) {
     mixingProfilesByProcess[procId] = Array.isArray(list)
       ? list.map((mp) => ({
           id: mp.id || `mp-${procId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-          equipment: Array.isArray(mp.equipment) ? mp.equipment.map((e) => ({ id: e.id, name: String(e.name ?? '').trim() })) : [],
+          tag: mp.tag !== undefined && mp.tag !== null ? String(mp.tag).trim() : '',
+          equipment: Array.isArray(mp.equipment)
+            ? mp.equipment.map((e, idx) => ({
+                id: e.id,
+                name: String(e.name ?? '').trim(),
+                order: e.order !== undefined && e.order !== null && !Number.isNaN(Number(e.order)) ? Number(e.order) : (idx + 1),
+                isPipelineStagger: Boolean(e.isPipelineStagger),
+                isBreakpoint: Boolean(e.isBreakpoint),
+              }))
+            : [],
           equipmentMinutes: mp.equipmentMinutes && typeof mp.equipmentMinutes === 'object' ? { ...mp.equipmentMinutes } : {},
-          processTimes: Array.isArray(mp.processTimes) ? mp.processTimes.map((pt) => ({ id: pt.id || `pt-${Date.now()}`, name: String(pt.name ?? '').trim(), minutes: Number(pt.minutes) || 0 })) : [],
+          processTimes: Array.isArray(mp.processTimes)
+            ? mp.processTimes.map((pt) => ({
+                id: pt.id || `pt-${Date.now()}`,
+                name: String(pt.name ?? '').trim(),
+                minutes: Number(pt.minutes) || 0,
+                order: pt.order !== undefined && pt.order !== null && !Number.isNaN(Number(pt.order)) ? Number(pt.order) : null,
+                isPipelineStagger: Boolean(pt.isPipelineStagger),
+                isBreakpoint: Boolean(pt.isBreakpoint),
+              }))
+            : [],
         }))
       : [];
+  });
+  // If a profile has processTimes without explicit ordering, assign them after equipment (or after max order).
+  Object.keys(mixingProfilesByProcess).forEach((procId) => {
+    const list = mixingProfilesByProcess[procId];
+    if (!Array.isArray(list)) return;
+    mixingProfilesByProcess[procId] = list.map((mp) => {
+      const equipment = Array.isArray(mp.equipment) ? mp.equipment.map((e) => ({ ...e })) : [];
+      const pts = Array.isArray(mp.processTimes) ? mp.processTimes.map((p) => ({ ...p })) : [];
+      const maxEqOrder = equipment.reduce((m, e) => Math.max(m, Number(e.order) || 0), 0);
+      let next = Math.max(1, maxEqOrder + 1);
+      const hasAnyPtOrder = pts.some((p) => p.order !== null && p.order !== undefined);
+      if (!hasAnyPtOrder) {
+        for (let i = 0; i < pts.length; i++) {
+          pts[i].order = next++;
+        }
+      } else {
+        // Fill missing with increasing orders after current max.
+        const maxExisting = Math.max(
+          maxEqOrder,
+          pts.reduce((m, p) => Math.max(m, Number(p.order) || 0), 0),
+        );
+        next = maxExisting + 1;
+        for (let i = 0; i < pts.length; i++) {
+          if (pts[i].order === null || pts[i].order === undefined || Number.isNaN(Number(pts[i].order))) {
+            pts[i].order = next++;
+          }
+        }
+      }
+      return { ...mp, equipment, processTimes: pts };
+    });
+  });
+  // Migration rule: if no explicit pipeline-stagger is set, treat a legacy-named "Gap" as the pipeline stagger.
+  Object.keys(mixingProfilesByProcess).forEach((procId) => {
+    const list = mixingProfilesByProcess[procId];
+    if (!Array.isArray(list)) return;
+    mixingProfilesByProcess[procId] = list.map((mp) => {
+      const eq = Array.isArray(mp.equipment) ? mp.equipment.map((x) => ({ ...x })) : [];
+      const pts = Array.isArray(mp.processTimes) ? mp.processTimes.map((x) => ({ ...x })) : [];
+      const hasExplicit = pts.some((pt) => pt.isPipelineStagger) || eq.some((e) => e.isPipelineStagger);
+      if (hasExplicit) return mp;
+      const idxGap = pts.findIndex((pt) => String(pt.name || '').trim().toLowerCase() === 'gap');
+      if (idxGap === -1) return mp;
+      pts[idxGap] = { ...pts[idxGap], isPipelineStagger: true };
+      return { ...mp, equipment: eq, processTimes: pts };
+    });
   });
   // Migration: if a process has equipment/processTimes but no mixing profiles, create one profile from current data
   const procList = processes;
@@ -96,6 +162,7 @@ function normalizeLine(l) {
   return {
     id: l.id,
     name: String(l.name || '').trim(),
+    profileTags,
     capacityProfile,
     processes,
     equipmentByProcess: equipmentByProcessFinal,
@@ -545,11 +612,50 @@ export function addMixingProfile(lineId, processId) {
   const byProcess = { ...(line.mixingProfilesByProcess || {}) };
   const list = [...(byProcess[processId] || [])];
   const id = `mp-${processId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  list.push({ id, equipment: [], equipmentMinutes: {}, processTimes: [] });
+  list.push({ id, tag: '', equipment: [], equipmentMinutes: {}, processTimes: [] });
   byProcess[processId] = list;
   lines = [...lines.slice(0, idx), { ...line, mixingProfilesByProcess: byProcess }, ...lines.slice(idx + 1)];
   persist();
   return { id };
+}
+
+// ----- Profile tags (per production line; assignable to mixing profiles) -----
+export function getProfileTagsForLine(lineId) {
+  const line = getLineById(lineId);
+  return Array.isArray(line?.profileTags) ? [...line.profileTags] : [];
+}
+
+export function addProfileTagForLine(lineId, tag) {
+  const trimmed = String(tag ?? '').trim();
+  if (!trimmed) return null;
+  const idx = lines.findIndex((l) => l.id === lineId);
+  if (idx === -1) return null;
+  const line = lines[idx];
+  const current = Array.isArray(line.profileTags) ? line.profileTags.map((t) => String(t ?? '').trim()).filter(Boolean) : [];
+  const exists = current.some((t) => t.toLowerCase() === trimmed.toLowerCase());
+  if (exists) return trimmed;
+  const next = [...current, trimmed];
+  updateLine(lineId, { profileTags: next });
+  return trimmed;
+}
+
+export function setTagForMixingProfile(lineId, processId, profileId, tag) {
+  const idx = lines.findIndex((l) => l.id === lineId);
+  if (idx === -1) return null;
+  const line = lines[idx];
+  const byProcess = { ...(line.mixingProfilesByProcess || {}) };
+  const list = (byProcess[processId] || []).map((mp) => mp.id === profileId ? { ...mp, tag: String(tag ?? '').trim() } : mp);
+  byProcess[processId] = list;
+  lines = [...lines.slice(0, idx), { ...line, mixingProfilesByProcess: byProcess }, ...lines.slice(idx + 1)];
+  persist();
+  const profiles = getMixingProfiles(lineId, processId);
+  const p = profiles.find((mp) => mp.id === profileId);
+  return p?.tag ?? '';
+}
+
+export function getTagForMixingProfile(lineId, processId, profileId) {
+  const profiles = getMixingProfiles(lineId, processId);
+  return profiles.find((mp) => mp.id === profileId)?.tag ?? '';
 }
 
 export function deleteMixingProfile(lineId, processId, profileId) {
@@ -575,7 +681,16 @@ export function setEquipmentForProfile(lineId, processId, profileId, equipmentLi
   if (idx === -1) return;
   const line = lines[idx];
   const byProcess = { ...(line.mixingProfilesByProcess || {}) };
-  const list = (byProcess[processId] || []).map((mp) => mp.id === profileId ? { ...mp, equipment: Array.isArray(equipmentList) ? equipmentList.map((e) => ({ id: e.id, name: e.name ?? '' })) : [] } : mp);
+  const list = (byProcess[processId] || []).map((mp) => mp.id === profileId ? {
+    ...mp,
+    equipment: Array.isArray(equipmentList) ? equipmentList.map((e, idx) => ({
+      id: e.id,
+      name: e.name ?? '',
+      order: e.order !== undefined && e.order !== null && !Number.isNaN(Number(e.order)) ? Number(e.order) : (idx + 1),
+      isPipelineStagger: Boolean(e.isPipelineStagger),
+      isBreakpoint: Boolean(e.isBreakpoint),
+    })) : [],
+  } : mp);
   byProcess[processId] = list;
   lines = [...lines.slice(0, idx), { ...line, mixingProfilesByProcess: byProcess }, ...lines.slice(idx + 1)];
   persist();
@@ -585,7 +700,22 @@ export function addEquipmentItemToProfile(lineId, processId, profileId, item) {
   const profiles = getMixingProfiles(lineId, processId);
   const p = profiles.find((mp) => mp.id === profileId);
   if (!p) return;
-  const eq = [...(p.equipment || []), { id: item?.id ?? item?.name, name: String(item?.name ?? 'Unnamed').trim() }];
+  const existingEq = Array.isArray(p.equipment) ? p.equipment : [];
+  const existingPts = Array.isArray(p.processTimes) ? p.processTimes : [];
+  const maxOrder = Math.max(
+    existingEq.reduce((m, e) => Math.max(m, Number(e.order) || 0), 0),
+    existingPts.reduce((m, pt) => Math.max(m, Number(pt.order) || 0), 0),
+  );
+  const eq = [
+    ...existingEq,
+    {
+      id: item?.id ?? item?.name,
+      name: String(item?.name ?? 'Unnamed').trim(),
+      order: maxOrder + 1,
+      isPipelineStagger: false,
+      isBreakpoint: false,
+    },
+  ];
   const idx = lines.findIndex((l) => l.id === lineId);
   const line = lines[idx];
   const byProcess = { ...(line.mixingProfilesByProcess || {}) };
@@ -593,6 +723,35 @@ export function addEquipmentItemToProfile(lineId, processId, profileId, item) {
   byProcess[processId] = list;
   lines = [...lines.slice(0, idx), { ...line, mixingProfilesByProcess: byProcess }, ...lines.slice(idx + 1)];
   persist();
+}
+
+export function updateEquipmentItemInProfile(lineId, processId, profileId, machineId, updates) {
+  const idx = lines.findIndex((l) => l.id === lineId);
+  if (idx === -1) return null;
+  const line = lines[idx];
+  const byProcess = { ...(line.mixingProfilesByProcess || {}) };
+  const list = (byProcess[processId] || []).map((mp) => {
+    if (mp.id !== profileId) return mp;
+    const equipment = (mp.equipment || []).map((e) => {
+      if (e.id !== machineId) {
+        return e;
+      }
+      return {
+        ...e,
+        ...updates,
+        order: updates?.order !== undefined && updates?.order !== null && !Number.isNaN(Number(updates.order)) ? Number(updates.order) : e.order,
+        isPipelineStagger: updates?.isPipelineStagger !== undefined ? Boolean(updates.isPipelineStagger) : Boolean(e.isPipelineStagger),
+        isBreakpoint: Boolean(updates?.isBreakpoint ?? e.isBreakpoint),
+      };
+    });
+    return { ...mp, equipment };
+  });
+  byProcess[processId] = list;
+  lines = [...lines.slice(0, idx), { ...line, mixingProfilesByProcess: byProcess }, ...lines.slice(idx + 1)];
+  persist();
+  const profiles = getMixingProfiles(lineId, processId);
+  const p = profiles.find((mp) => mp.id === profileId);
+  return p?.equipment?.find((e) => e.id === machineId) ?? null;
 }
 
 export function deleteEquipmentItemFromProfile(lineId, processId, profileId, machineId) {
@@ -661,13 +820,20 @@ export function addProcessTimeToProfile(lineId, processId, profileId, entry) {
   const list = (byProcess[processId] || []).map((mp) => {
     if (mp.id !== profileId) return mp;
     const processTimes = [...(mp.processTimes || [])];
+    const equipment = [...(mp.equipment || [])];
+    const maxOrder = Math.max(
+      equipment.reduce((m, e) => Math.max(m, Number(e.order) || 0), 0),
+      processTimes.reduce((m, pt) => Math.max(m, Number(pt.order) || 0), 0),
+    );
     const newEntry = {
       id: entry?.id || `pt-${profileId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       name: String(entry?.name ?? '').trim(),
       minutes: entry?.minutes !== undefined && entry?.minutes !== '' && !Number.isNaN(Number(entry.minutes)) ? Number(entry.minutes) : 0,
+      order: entry?.order !== undefined && entry?.order !== null && !Number.isNaN(Number(entry.order)) ? Number(entry.order) : (maxOrder + 1),
+      isPipelineStagger: Boolean(entry?.isPipelineStagger),
+      isBreakpoint: Boolean(entry?.isBreakpoint),
     };
-    processTimes.push(newEntry);
-    return { ...mp, processTimes };
+    return { ...mp, equipment, processTimes: processTimes.concat([newEntry]) };
   });
   byProcess[processId] = list;
   lines = [...lines.slice(0, idx), { ...line, mixingProfilesByProcess: byProcess }, ...lines.slice(idx + 1)];
@@ -686,7 +852,21 @@ export function updateProcessTimeInProfile(lineId, processId, profileId, process
   const byProcess = { ...(line.mixingProfilesByProcess || {}) };
   const list = (byProcess[processId] || []).map((mp) => {
     if (mp.id !== profileId) return mp;
-    const processTimes = (mp.processTimes || []).map((pt) => pt.id === processTimeId ? { ...pt, ...updates, name: updates.name !== undefined ? String(updates.name).trim() : pt.name, minutes: updates.minutes !== undefined && !Number.isNaN(Number(updates.minutes)) ? Number(updates.minutes) : pt.minutes } : pt);
+    const processTimes = (mp.processTimes || []).map((pt) => {
+      if (pt.id !== processTimeId) {
+        return pt;
+      }
+      const next = {
+        ...pt,
+        ...updates,
+        name: updates.name !== undefined ? String(updates.name).trim() : pt.name,
+        minutes: updates.minutes !== undefined && !Number.isNaN(Number(updates.minutes)) ? Number(updates.minutes) : pt.minutes,
+        order: updates.order !== undefined && updates.order !== null && !Number.isNaN(Number(updates.order)) ? Number(updates.order) : pt.order,
+        isBreakpoint: updates.isBreakpoint !== undefined ? Boolean(updates.isBreakpoint) : Boolean(pt.isBreakpoint),
+        isPipelineStagger: updates.isPipelineStagger !== undefined ? Boolean(updates.isPipelineStagger) : Boolean(pt.isPipelineStagger),
+      };
+      return next;
+    });
     return { ...mp, processTimes };
   });
   byProcess[processId] = list;
@@ -706,6 +886,63 @@ export function deleteProcessTimeFromProfile(lineId, processId, profileId, proce
   byProcess[processId] = list;
   lines = [...lines.slice(0, idx), { ...line, mixingProfilesByProcess: byProcess }, ...lines.slice(idx + 1)];
   persist();
+}
+
+/** Pipelining stagger minutes: next batch Actual Process Start = previous + this (from explicit per-profile selection). */
+export function getStaggerMinutesFromMixingProfiles(profiles) {
+  const first = profiles && profiles[0];
+  if (!first) return 0;
+  const equipment = Array.isArray(first.equipment) ? first.equipment : [];
+  const processTimes = Array.isArray(first.processTimes) ? first.processTimes : [];
+
+  const selectedKeys = [];
+  for (const e of equipment) if (e?.isPipelineStagger) selectedKeys.push({ kind: 'equipment', id: e.id });
+  for (const pt of processTimes) if (pt?.isPipelineStagger) selectedKeys.push({ kind: 'processTime', id: pt.id });
+  if (selectedKeys.length === 0) return 0;
+
+  // Build ordered steps across both lists
+  const steps = [];
+  for (const e of equipment) {
+    const mins = first.equipmentMinutes && e?.id != null ? first.equipmentMinutes[e.id] : null;
+    steps.push({
+      kind: 'equipment',
+      id: e.id,
+      order: Number(e.order) || null,
+      minutes: mins !== undefined && mins !== null && !Number.isNaN(Number(mins)) ? Number(mins) : 0,
+    });
+  }
+  for (const pt of processTimes) {
+    steps.push({
+      kind: 'processTime',
+      id: pt.id,
+      order: Number(pt.order) || null,
+      minutes: pt.minutes !== undefined && pt.minutes !== null && !Number.isNaN(Number(pt.minutes)) ? Number(pt.minutes) : 0,
+    });
+  }
+  steps.sort((a, b) => {
+    const ao = a.order ?? Number.POSITIVE_INFINITY;
+    const bo = b.order ?? Number.POSITIVE_INFINITY;
+    if (ao !== bo) return ao - bo;
+    // Stable secondary ordering
+    if (a.kind !== b.kind) return a.kind.localeCompare(b.kind);
+    return String(a.id).localeCompare(String(b.id));
+  });
+
+  // Rule: stagger = earliest selected breakpoint in sequence.
+  // That means: compute cumulative time to each selected step; take the minimum.
+  let cumulative = 0;
+  const selectedSet = new Set(selectedKeys.map((k) => `${k.kind}:${k.id}`));
+  let best = null;
+  for (const s of steps) {
+    cumulative += Number(s.minutes) || 0;
+    if (selectedSet.has(`${s.kind}:${s.id}`)) {
+      best = best === null ? cumulative : Math.min(best, cumulative);
+    }
+  }
+  return Math.max(0, best ?? 0);
+}
+export function getStaggerMinutesForLine(lineId) {
+  return getStaggerMinutesFromMixingProfiles(getMixingProfiles(lineId, 'mixing'));
 }
 
 export { LINES_STORAGE_KEY, LOAF_SECTION_IDS };

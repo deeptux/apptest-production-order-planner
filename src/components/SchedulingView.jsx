@@ -5,7 +5,7 @@ import * as Tooltip from '@radix-ui/react-tooltip';
 import { usePlan } from '../context/PlanContext';
 import { useSnackbar } from '../context/SnackbarContext';
 import { computeTheoreticalOutput, getLatestBatchEndForLine, getOrderBatchAndLineBatch } from '../store/planStore';
-import { recomputeEndTimesForRow } from '../utils/stageDurations';
+import { recomputeEndTimesForRow, parseTimeToMinutes } from '../utils/stageDurations';
 import { getProductionStatus } from '../utils/productionStatus';
 import { getRecipesForLine, getTotalProcessMinutes, getTotalProcessMinutesForLine } from '../store/recipeStore';
 import { getCapacityForProduct, getDoughWeightKgForProduct, getGramsPerUnitForProduct, getTotalDoughWeightKgForProduct, getYieldForProduct } from '../store/capacityProfileStore';
@@ -16,6 +16,107 @@ const FIELDS_THAT_TRIGGER_AUTO_ADJUST = ['startSponge', 'product'];
 export default function SchedulingView() {
   const { planDate, setPlanDate, rows, setRows, reorderRows, swapOrderBetweenRows, addBatch, addBatchesFromModal, deleteBatch } = usePlan();
   const { show: showSnackbar } = useSnackbar() ?? {};
+  const formatTime12h = useCallback((hhmm) => {
+    if (!hhmm || typeof hhmm !== 'string') return '—';
+    const m = hhmm.trim().match(/^(\d{1,2}):(\d{2})$/);
+    if (!m) return hhmm;
+    let h = Number(m[1]);
+    const mm = m[2];
+    if (Number.isNaN(h)) return hhmm;
+    h = ((h % 24) + 24) % 24;
+    const ampm = h >= 12 ? 'PM' : 'AM';
+    const h12 = h % 12 === 0 ? 12 : (h % 12);
+    return `${h12}:${mm} ${ampm}`;
+  }, []);
+
+  const formatDateShort = useCallback((yyyyMmDd) => {
+    if (!yyyyMmDd || typeof yyyyMmDd !== 'string') return '—';
+    const d = new Date(`${yyyyMmDd}T00:00:00`);
+    if (Number.isNaN(d.getTime())) return yyyyMmDd;
+    return new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).format(d);
+  }, []);
+
+  const formatDateRelative = useCallback((yyyyMmDd) => {
+    if (!yyyyMmDd || typeof yyyyMmDd !== 'string') return '—';
+    const d = new Date(`${yyyyMmDd}T00:00:00`);
+    if (Number.isNaN(d.getTime())) return yyyyMmDd;
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const target = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    const diffDays = Math.round((target.getTime() - today.getTime()) / (24 * 60 * 60 * 1000));
+    if (diffDays === 0) return 'Today';
+    if (diffDays === -1) return 'Yesterday';
+    if (diffDays === 1) return 'Tomorrow';
+    return formatDateShort(yyyyMmDd);
+  }, [formatDateShort]);
+
+  const formatDateCreated = useCallback((isoOrYmd) => {
+    if (!isoOrYmd || typeof isoOrYmd !== 'string') return '—';
+    // Accept ISO or YYYY-MM-DD
+    const d = isoOrYmd.includes('T') ? new Date(isoOrYmd) : new Date(`${isoOrYmd}T00:00:00`);
+    if (Number.isNaN(d.getTime())) return isoOrYmd;
+    return new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).format(d);
+  }, []);
+
+  const getCreatedAtMs = useCallback((row) => {
+    const iso = row?.createdAt;
+    if (iso && typeof iso === 'string') {
+      const t = new Date(iso).getTime();
+      if (!Number.isNaN(t)) return t;
+    }
+    // Fallback: row.id often starts with Date.now() ms
+    const id = String(row?.id ?? '');
+    const m = id.match(/^(\d{10,13})/);
+    if (m) {
+      const n = Number(m[1]);
+      if (!Number.isNaN(n)) return n;
+    }
+    return null;
+  }, []);
+
+  const formatSkuIdFromMs = useCallback((ms) => {
+    if (!ms || Number.isNaN(Number(ms))) return '—';
+    const d = new Date(Number(ms));
+    if (Number.isNaN(d.getTime())) return '—';
+    const MM = String(d.getMonth() + 1).padStart(2, '0');
+    const DD = String(d.getDate()).padStart(2, '0');
+    const YYYY = String(d.getFullYear());
+    const HH = String(d.getHours()).padStart(2, '0');
+    const mm = String(d.getMinutes()).padStart(2, '0');
+    const ss = String(d.getSeconds()).padStart(2, '0');
+    return `${MM}${DD}${YYYY}${HH}${mm}${ss}`;
+  }, []);
+
+  const formatMinutesAsHours = useCallback((mins) => {
+    const total = Number(mins);
+    if (mins === '' || mins === null || mins === undefined || Number.isNaN(total)) return '—';
+    const safe = Math.max(0, total);
+    const h = Math.floor(safe / 60);
+    const m = Math.round(safe % 60);
+    if (h <= 0) return `${m}m`;
+    if (m === 0) return `${h}h`;
+    return `${h}h ${m}m`;
+  }, []);
+
+  const addDaysToDateStr = useCallback((yyyyMmDd, days) => {
+    if (!yyyyMmDd || typeof yyyyMmDd !== 'string') return '';
+    const d = new Date(`${yyyyMmDd}T00:00:00`);
+    if (Number.isNaN(d.getTime())) return yyyyMmDd;
+    d.setDate(d.getDate() + Number(days || 0));
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  }, []);
+
+  const getEndDateStr = useCallback((startDateStr, startTimeStr, endTimeStr) => {
+    if (!startDateStr) return '';
+    const startMins = parseTimeToMinutes(startTimeStr);
+    const endMins = parseTimeToMinutes(endTimeStr);
+    // If end time is earlier than start time, it crossed midnight -> next day
+    if (endTimeStr && startTimeStr && endMins < startMins) return addDaysToDateStr(startDateStr, 1);
+    return startDateStr;
+  }, [addDaysToDateStr]);
   const [editingRowId, setEditingRowId] = useState(null);
   const [draftRow, setDraftRow] = useState(null);
   const [addBatchModalOpen, setAddBatchModalOpen] = useState(false);
@@ -35,7 +136,7 @@ export default function SchedulingView() {
   const [addBatchValidationError, setAddBatchValidationError] = useState('');
   const [addBatchSelectedBatchIndex, setAddBatchSelectedBatchIndex] = useState(0);
   const [selectedLineId, setSelectedLineId] = useState('all');
-  const [showAllDates, setShowAllDates] = useState(false);
+  const [showAllDates, setShowAllDates] = useState(true);
   const [hoveredRowId, setHoveredRowId] = useState(null);
   const [clickedRowId, setClickedRowId] = useState(null);
   const [statusTick, setStatusTick] = useState(() => Date.now());
@@ -111,13 +212,20 @@ export default function SchedulingView() {
   const handleAddBatchSubmit = useCallback(() => {
     setAddBatchValidationError('');
     const f = addBatchForm;
+    const totalQty = Number(f.soQty) || 0;
+    const yieldForProduct = f.product && f.productionLineId ? getYieldForProduct(f.product, f.productionLineId) : null;
+    const canUseTotalQty = totalQty > 0 && yieldForProduct != null && yieldForProduct > 0;
+    if (totalQty > 0 && !canUseTotalQty) {
+      setAddBatchValidationError('Total Quantity splitting requires Theoretical Yield / Batch. Please set Yield in Capacity Profile (Production) for this product/line.');
+      return;
+    }
     const salesOrderNum = f.salesOrder !== '' && !Number.isNaN(Number(f.salesOrder)) ? Number(f.salesOrder) : 0;
     const carryOverNum = Number(f.carryOverExcess) || 0;
     const computedSoCoExcess = Math.max(0, salesOrderNum - carryOverNum);
     const theorOutput = f.theorOutputOverride !== undefined && f.theorOutputOverride !== '' && !Number.isNaN(Number(f.theorOutputOverride))
       ? Number(f.theorOutputOverride)
       : computedSoCoExcess + (Number(f.exchangeForLoss) || 0) + (Number(f.excess) || 0) + (Number(f.samples) || 2);
-    if (theorOutput <= 0) {
+    if (!canUseTotalQty && theorOutput <= 0) {
       setAddBatchValidationError('Theoretical Output must be greater than 0 (set Sales Order, or use Exchange for LOSS, Excess, Samples, or override).');
       return;
     }
@@ -322,15 +430,16 @@ export default function SchedulingView() {
                 <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap">Order</th>
                 <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap w-10 sm:w-12">Actions</th>
                 <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[4rem]">Line</th>
-                <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[5rem]">Date</th>
+                <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[7rem]">Date Created</th>
+                <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[7rem]">SKU ID#</th>
                 <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[6rem]">Product</th>
                 <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[4rem]">Sales Order</th>
                 <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[5rem]">Total Qty</th>
                 <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[4rem]">Batch Qty</th>
-                <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[4rem]">Process Time</th>
                 <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[4rem]">Start Sponge</th>
                 <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[4rem]">End Dough</th>
                 <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[4rem]">End Batch</th>
+                <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[5rem]">Process Time</th>
                 <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[3rem]">Order Batch</th>
                 <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[3rem]">Line Batch</th>
                 <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[4rem]">Production Status</th>
@@ -434,15 +543,35 @@ export default function SchedulingView() {
                       </div>
                     </td>
                     <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-700 text-inherit">{getLineById(row.productionLineId)?.name ?? '—'}</td>
-                    <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-700 text-inherit">{row.date ?? '—'}</td>
+                    <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-700 text-inherit whitespace-nowrap">{formatDateCreated(row.createdAt ?? '')}</td>
+                    <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-700 text-inherit tabular-nums whitespace-nowrap">{formatSkuIdFromMs(getCreatedAtMs(row))}</td>
                     <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-800 text-inherit">{row.product ?? '—'}</td>
                     <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-800 text-inherit">{row.salesOrder ?? '—'}</td>
                     <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-800 text-inherit">{row.soQty ?? '—'}</td>
                     <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-800 text-inherit">{row.theorOutput ?? '—'}</td>
-                    <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-700 text-inherit">{displayProcTime || '—'}</td>
-                    <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-700 text-inherit">{row.startSponge ?? '—'}</td>
-                    <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-700 text-inherit">{row.endDough ?? '—'}</td>
-                    <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-700 text-inherit">{row.endBatch ?? '—'}</td>
+                    <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-700 text-inherit">
+                      <div className="leading-tight">
+                        <div>{formatTime12h(row.startSponge)}</div>
+                        <div className="text-[0.65rem] sm:text-xs text-gray-500">{formatDateRelative(row.date)}</div>
+                      </div>
+                    </td>
+                    <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-700 text-inherit">
+                      <div className="leading-tight">
+                        <div>{formatTime12h(row.endDough)}</div>
+                        <div className="text-[0.65rem] sm:text-xs text-gray-500">
+                          {formatDateRelative(getEndDateStr(row.date, row.startSponge, row.endDough))}
+                        </div>
+                      </div>
+                    </td>
+                    <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-700 text-inherit">
+                      <div className="leading-tight">
+                        <div>{formatTime12h(row.endBatch)}</div>
+                        <div className="text-[0.65rem] sm:text-xs text-gray-500">
+                          {formatDateRelative(getEndDateStr(row.date, row.startSponge, row.endBatch))}
+                        </div>
+                      </div>
+                    </td>
+                    <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-700 text-inherit whitespace-nowrap tabular-nums">{formatMinutesAsHours(displayProcTime)}</td>
                     <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-700 text-inherit">{orderBatchMap[row.id] ?? '—'}</td>
                     <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-700 text-inherit">{lineBatchMap[row.id] ?? '—'}</td>
                     <td className="py-2 sm:py-2.5 px-2 sm:px-4">
@@ -773,6 +902,7 @@ export default function SchedulingView() {
                   ? Math.min(addBatchSelectedBatchIndex, numBatches - 1)
                   : 0;
                 const quantityOfBatch = batchQuantities[selectedBatchIndex] ?? '—';
+                const canUseTotalQty = totalQty > 0 && yieldForProduct != null && yieldForProduct > 0;
                 const batchOrdinal = (n) => {
                   const s = ['th', 'st', 'nd', 'rd'];
                   const v = n % 100;
@@ -797,7 +927,11 @@ export default function SchedulingView() {
                         placeholder={String(Math.max(0, (Number(addBatchForm.salesOrder) || 0) - (Number(addBatchForm.carryOverExcess) || 0)) + (Number(addBatchForm.exchangeForLoss) || 0) + (Number(addBatchForm.excess) || 0) + (Number(addBatchForm.samples) || 2))}
                         className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900"
                       />
-                      <p className="text-xs text-gray-500 mt-0.5">SO-CO Excess + Exchange for LOSS + Excess + Samples. Leave empty to use computed, or type to override.</p>
+                      <p className="text-xs text-gray-500 mt-0.5">
+                        {canUseTotalQty
+                          ? 'Not required when Total Quantity + Yield/Batch are provided (batch splitting uses Total Quantity).'
+                          : 'SO-CO Excess + Exchange for LOSS + Excess + Samples. Leave empty to use computed, or type to override.'}
+                      </p>
                     </div>
                     <div>
                       <label className="block text-xs font-medium text-gray-600 mb-0.5">Number of batches</label>

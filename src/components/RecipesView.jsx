@@ -1,4 +1,5 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { Plus, Pencil, Trash2, Check, X } from 'lucide-react';
 import * as Dialog from '@radix-ui/react-dialog';
 import {
@@ -32,8 +33,142 @@ export default function RecipesView() {
   });
   const [deleteConfirmId, setDeleteConfirmId] = useState(null);
   const [, setRefreshTick] = useState(0);
+  const [profilePickerOpenKey, setProfilePickerOpenKey] = useState(null); // `${context}:${recipeId}:${procId}` | null
+  const [profilePickerQuery, setProfilePickerQuery] = useState('');
+  const profilePickerRef = useRef(null);
+  const [profilePickerBounds, setProfilePickerBounds] = useState(null); // { left, top, width } | null
 
   const refresh = useCallback(() => setRefreshTick((t) => t + 1), []);
+
+  useEffect(() => {
+    if (!profilePickerOpenKey) return undefined;
+    const onDown = (e) => {
+      const root = profilePickerRef.current;
+      if (!root) return;
+      if (!root.contains(e.target)) {
+        setProfilePickerOpenKey(null);
+        setProfilePickerQuery('');
+      }
+    };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [profilePickerOpenKey]);
+
+  useEffect(() => {
+    if (!profilePickerOpenKey) return undefined;
+    const onScrollOrResize = () => {
+      // Keep it simple: close on scroll/resize to avoid misalignment.
+      setProfilePickerOpenKey(null);
+      setProfilePickerQuery('');
+      setProfilePickerBounds(null);
+    };
+    window.addEventListener('scroll', onScrollOrResize, true);
+    window.addEventListener('resize', onScrollOrResize);
+    return () => {
+      window.removeEventListener('scroll', onScrollOrResize, true);
+      window.removeEventListener('resize', onScrollOrResize);
+    };
+  }, [profilePickerOpenKey]);
+
+  const profileOptionLabel = useCallback((lineId, procId, profile) => {
+    const mins = getProfileTotalMinutes(lineId, procId, profile.id);
+    return `${mins} min`;
+  }, []);
+
+  const ProfilePicker = useCallback(function ProfilePicker({ openKey, lineId, procId, selectedProfileId, profiles, onSelect }) {
+    const isOpen = profilePickerOpenKey === openKey;
+    const q = profilePickerQuery.trim().toLowerCase();
+    const filtered = q
+      ? profiles.filter((p) => {
+          const mins = String(getProfileTotalMinutes(lineId, procId, p.id));
+          const tag = String(p.tag ?? '').toLowerCase();
+          return mins.includes(q) || tag.includes(q);
+        })
+      : profiles;
+    const selected = selectedProfileId ? profiles.find((p) => p.id === selectedProfileId) : null;
+    return (
+      <div className="relative" ref={isOpen ? profilePickerRef : null}>
+        <button
+          type="button"
+          onClick={() => {
+            setProfilePickerOpenKey((prev) => {
+              const next = prev === openKey ? null : openKey;
+              if (next) {
+                const r = profilePickerRef.current?.querySelector('button')?.getBoundingClientRect?.();
+                // Prefer currentTarget bounds if available
+              }
+              return next;
+            });
+          }}
+          onMouseDown={(e) => {
+            // Capture trigger bounds before opening so portal can position correctly.
+            const rect = e.currentTarget.getBoundingClientRect();
+            setProfilePickerBounds({ left: rect.left, top: rect.bottom + 6, width: rect.width });
+            setProfilePickerQuery('');
+          }}
+          className="border border-gray-300 rounded px-2 py-1 text-gray-900 bg-white w-full min-w-[7rem] sm:min-w-[8rem] text-left"
+          title="Select process profile (searchable by minutes or tag)"
+        >
+          {selected ? profileOptionLabel(lineId, procId, selected) : '— Select —'}
+        </button>
+        {isOpen && (
+          createPortal(
+            <div
+              className="fixed z-[100] rounded-lg border border-gray-200 bg-white shadow-lg"
+              style={{
+                left: profilePickerBounds?.left ?? 0,
+                top: profilePickerBounds?.top ?? 0,
+                width: Math.max(profilePickerBounds?.width ?? 0, 240),
+                maxWidth: 'min(24rem, 90vw)',
+              }}
+            >
+              <div className="p-2 border-b border-gray-200">
+                <input
+                  value={profilePickerQuery}
+                  onChange={(e) => setProfilePickerQuery(e.target.value)}
+                  placeholder="Search by minutes or tag…"
+                  className="w-full border border-gray-300 rounded px-2 py-1 text-sm"
+                  autoFocus
+                />
+              </div>
+              <div className="max-h-56 overflow-auto">
+                <button
+                  type="button"
+                  onClick={() => { onSelect(''); setProfilePickerOpenKey(null); setProfilePickerQuery(''); setProfilePickerBounds(null); }}
+                  className="w-full text-left px-3 py-2 text-sm hover:bg-gray-50"
+                >
+                  — Select —
+                </button>
+                {filtered.map((p) => (
+                  <button
+                    key={p.id}
+                    type="button"
+                    onClick={() => { onSelect(p.id); setProfilePickerOpenKey(null); setProfilePickerQuery(''); setProfilePickerBounds(null); }}
+                    className={`w-full text-left px-3 py-2 text-sm hover:bg-gray-50 ${p.id === selectedProfileId ? 'bg-primary/5' : ''}`}
+                  >
+                    <span className="tabular-nums">{profileOptionLabel(lineId, procId, p)}</span>
+                  </button>
+                ))}
+                {filtered.length === 0 && (
+                  <div className="px-3 py-2 text-sm text-gray-500">No matches.</div>
+                )}
+              </div>
+            </div>,
+            document.body
+          )
+        )}
+      </div>
+    );
+  }, [getProfileTotalMinutes, profileOptionLabel, profilePickerOpenKey, profilePickerQuery]);
+
+  const formatMinutesAsHours = useCallback((mins) => {
+    const total = Math.max(0, Number(mins) || 0);
+    const h = Math.floor(total / 60);
+    const m = Math.round(total % 60);
+    if (h <= 0) return `${m} min`;
+    if (m === 0) return `${h}h`;
+    return `${h}h ${m}m`;
+  }, []);
 
   const startEdit = useCallback((recipe) => {
     setEditingId(recipe.id);
@@ -133,7 +268,7 @@ export default function RecipesView() {
           </button>
         </div>
         <div className="overflow-auto min-w-0 border border-gray-200 rounded-b-lg" style={{ maxHeight: 'min(60vh, 480px)' }}>
-          <table className="w-full border-collapse text-xs sm:text-sm md:text-base 2xl:text-lg min-w-[320px]">
+          <table className="w-full border-collapse text-[11px] sm:text-xs md:text-sm lg:text-base min-w-[720px]">
             <thead className="sticky top-0 z-10 bg-surface-card-warm shadow-[0_1px_0_0_rgba(0,0,0,0.06)]">
               <tr className="border-b border-gray-200">
                 <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 whitespace-nowrap bg-surface-card-warm">
@@ -154,12 +289,12 @@ export default function RecipesView() {
                   Product name
                 </th>
                 {processesForColumns.map((proc) => (
-                  <th key={proc.id} className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 whitespace-nowrap bg-surface-card-warm">
+                  <th key={proc.id} className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 whitespace-nowrap bg-surface-card-warm min-w-[6.5rem]">
                     {proc.name}
                   </th>
                 ))}
                 <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 whitespace-nowrap bg-surface-card-warm">
-                  Total Process Time (mins)
+                  Total Process Time
                 </th>
                 <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 whitespace-nowrap bg-surface-card-warm">
                   End Dough
@@ -178,8 +313,8 @@ export default function RecipesView() {
                     ? (draft.mixing || 0) + (draft.makeupDividing || 0) + (draft.makeupPanning || 0) + (draft.baking || 0) + (draft.packaging || 0)
                     : getTotalProcessMinutes(recipe.name));
                 const inputClass = isEditing
-                  ? 'border border-gray-300 rounded px-2 py-1 text-gray-900 bg-white w-full max-w-[100px] text-inherit'
-                  : 'border border-gray-200 rounded px-2 py-1 text-gray-700 bg-gray-50 w-full max-w-[100px] cursor-not-allowed text-inherit';
+                  ? 'border border-gray-300 rounded px-2 py-1 text-gray-900 bg-white w-16 sm:w-20 md:w-24 text-center tabular-nums text-inherit'
+                  : 'border border-gray-200 rounded px-2 py-1 text-gray-700 bg-gray-50 w-16 sm:w-20 md:w-24 cursor-not-allowed text-center tabular-nums text-inherit';
                 return (
                   <tr
                     key={recipe.id}
@@ -262,38 +397,28 @@ export default function RecipesView() {
                       return (
                         <td key={proc.id} className="py-2 sm:py-2.5 px-2 sm:px-4">
                           {isEditing && editProfiles.length > 0 ? (
-                            <select
-                              value={selectedProfileId}
-                              onChange={(e) => {
-                                const pid = e.target.value;
+                            <ProfilePicker
+                              openKey={`edit:${recipe.id}:${proc.id}`}
+                              lineId={editLineId}
+                              procId={proc.id}
+                              profiles={editProfiles}
+                              selectedProfileId={selectedProfileId}
+                              onSelect={(pid) => {
                                 const mins = pid ? getProfileTotalMinutes(editLineId, proc.id, pid) : 0;
                                 updateDraftProcessDuration(proc.id, mins);
                               }}
-                              className={`${inputClass.replace('cursor-not-allowed', '')} min-w-[5.5rem] sm:min-w-[6rem] md:min-w-[7rem]`}
-                            >
-                              <option value="">— Select —</option>
-                              {editProfiles.map((p) => (
-                                <option key={p.id} value={p.id}>
-                                  {getProfileTotalMinutes(editLineId, proc.id, p.id)} min
-                                </option>
-                              ))}
-                            </select>
+                            />
                           ) : isEditing && editProfiles.length === 0 ? (
                             <span className="text-gray-500 text-xs sm:text-sm">N/A</span>
                           ) : (
-                            <input
-                              type="number"
-                              min={0}
-                              value={pd[proc.id] ?? ''}
-                              onChange={(e) => updateDraftProcessDuration(proc.id, e.target.value)}
-                              disabled={!isEditing}
-                              className={inputClass}
-                            />
+                            <span className="inline-block tabular-nums text-gray-800 min-w-[3.5rem] text-center">
+                              {(pd[proc.id] ?? 0)} min
+                            </span>
                           )}
                         </td>
                       );
                     })}
-                    <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-700 tabular-nums select-none">{displayTotal}</td>
+                    <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-700 tabular-nums select-none whitespace-nowrap">{formatMinutesAsHours(displayTotal)}</td>
                     <td className="py-2 sm:py-2.5 px-2 sm:px-4">
                       {(() => {
                         const lineId = (isEditing && draft ? draft.productionLineId : recipe.productionLineId) ?? '';
@@ -390,25 +515,20 @@ export default function RecipesView() {
                       return (
                         <div key={proc.id}>
                           <label className="block text-xs sm:text-sm font-medium text-gray-700">{proc.name}</label>
-                          <select
-                            value={selectedProfileId}
-                            onChange={(e) => {
-                              const pid = e.target.value;
+                          <ProfilePicker
+                            openKey={`add:${proc.id}`}
+                            lineId={addDraft.productionLineId}
+                            procId={proc.id}
+                            profiles={profiles}
+                            selectedProfileId={selectedProfileId}
+                            onSelect={(pid) => {
                               const mins = pid ? getProfileTotalMinutes(addDraft.productionLineId, proc.id, pid) : 0;
                               setAddDraft((p) => ({
                                 ...p,
                                 processDurations: { ...(p.processDurations || {}), [proc.id]: mins },
                               }));
                             }}
-                            className="w-full border border-gray-300 rounded px-3 py-2 text-gray-900 text-sm bg-white min-w-[6rem] sm:min-w-[7rem]"
-                          >
-                            <option value="">— Select —</option>
-                            {profiles.map((p) => (
-                              <option key={p.id} value={p.id}>
-                                {getProfileTotalMinutes(addDraft.productionLineId, proc.id, p.id)} min
-                              </option>
-                            ))}
-                          </select>
+                          />
                         </div>
                       );
                     })}
