@@ -14,7 +14,7 @@ import { getLines, getLineById } from '../store/productionLinesStore';
 const FIELDS_THAT_TRIGGER_AUTO_ADJUST = ['startSponge', 'product'];
 
 export default function SchedulingView() {
-  const { planDate, setPlanDate, rows, setRows, reorderRows, swapOrderBetweenRows, addBatch, addBatchesFromModal, previewInsertBatchesWithReflow, insertBatchesWithReflow, deleteBatch } = usePlan();
+  const { planDate, setPlanDate, rows, setRows, reorderRows, previewSwapOrderBetweenRows, swapOrderBetweenRows, addBatch, addBatchesFromModal, previewInsertBatchesWithReflow, insertBatchesWithReflow, deleteBatch } = usePlan();
   const { show: showSnackbar } = useSnackbar() ?? {};
   const formatTime12h = useCallback((hhmm) => {
     if (!hhmm || typeof hhmm !== 'string') return '—';
@@ -149,14 +149,59 @@ export default function SchedulingView() {
   const [deleteConfirmText, setDeleteConfirmText] = useState('');
   const clickTimeoutRef = useRef(null);
   const hoverTimeoutRef = useRef(null);
+  const swapHighlightTimeoutRef = useRef(null);
+  const [swapHighlightRowIds, setSwapHighlightRowIds] = useState([]);
+  const [swapConfirmOpen, setSwapConfirmOpen] = useState(false);
+  const [swapConfirmInfo, setSwapConfirmInfo] = useState(null); // { rowIdA, rowIdB, crossDay, changedCount }
+  const [swapConfirmCountdown, setSwapConfirmCountdown] = useState(0);
+  const [timeConflictCountdown, setTimeConflictCountdown] = useState(0);
+  const [deleteConfirmCountdown, setDeleteConfirmCountdown] = useState(0);
+  const [orderHelpOpen, setOrderHelpOpen] = useState(false);
   const lines = getLines();
 
   useEffect(() => {
     return () => {
       if (clickTimeoutRef.current) clearTimeout(clickTimeoutRef.current);
       if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
+      if (swapHighlightTimeoutRef.current) clearTimeout(swapHighlightTimeoutRef.current);
     };
   }, []);
+
+  useEffect(() => {
+    if (!swapConfirmOpen) {
+      setSwapConfirmCountdown(0);
+      return undefined;
+    }
+    setSwapConfirmCountdown(4);
+    const t = setInterval(() => {
+      setSwapConfirmCountdown((v) => (v <= 1 ? 0 : v - 1));
+    }, 1000);
+    return () => clearInterval(t);
+  }, [swapConfirmOpen]);
+
+  useEffect(() => {
+    if (!timeConflictOpen) {
+      setTimeConflictCountdown(0);
+      return undefined;
+    }
+    setTimeConflictCountdown(4);
+    const t = setInterval(() => {
+      setTimeConflictCountdown((v) => (v <= 1 ? 0 : v - 1));
+    }, 1000);
+    return () => clearInterval(t);
+  }, [timeConflictOpen]);
+
+  useEffect(() => {
+    if (!deleteConfirmOpen) {
+      setDeleteConfirmCountdown(0);
+      return undefined;
+    }
+    setDeleteConfirmCountdown(4);
+    const t = setInterval(() => {
+      setDeleteConfirmCountdown((v) => (v <= 1 ? 0 : v - 1));
+    }, 1000);
+    return () => clearInterval(t);
+  }, [deleteConfirmOpen]);
 
   useEffect(() => {
     const interval = setInterval(() => setStatusTick(Date.now()), 60 * 1000);
@@ -418,15 +463,11 @@ export default function SchedulingView() {
   }, []);
 
   const handleDeleteClick = useCallback((row) => {
-    const status = getProductionStatus(row, statusTick);
-    if (status === 'In Progress') {
-      setDeleteTargetRow(row);
-      setDeleteConfirmText('');
-      setDeleteConfirmOpen(true);
-      return;
-    }
-    const result = deleteBatch(row.id);
-    if (result && !result.success && result.error) showSnackbar?.(result.error);
+    setDeleteTargetRow(row);
+    setDeleteConfirmText('');
+    setDeleteConfirmOpen(true);
+    setSwapHighlightRowIds([]);
+    setClickedRowId(null);
   }, [deleteBatch, showSnackbar, statusTick]);
 
   const confirmSave = useCallback(() => {
@@ -445,16 +486,44 @@ export default function SchedulingView() {
     if (index <= 0) return;
     const row = sortedDisplayedRows[index];
     const prevRow = sortedDisplayedRows[index - 1];
-    if (row.productionLineId !== prevRow.productionLineId || (row.date || '') !== (prevRow.date || '')) return;
+    if (row.productionLineId !== prevRow.productionLineId) return;
+    const preview = typeof previewSwapOrderBetweenRows === 'function'
+      ? previewSwapOrderBetweenRows(row.id, prevRow.id)
+      : { canSwap: true, crossDay: false, changedCount: 2 };
+    const requiresConfirm = !!preview?.canSwap && ((preview?.crossDay) || (Number(preview?.changedCount || 0) > 2));
+    if (requiresConfirm) {
+      setSwapConfirmInfo({ rowIdA: row.id, rowIdB: prevRow.id, crossDay: !!preview.crossDay, changedCount: Number(preview.changedCount || 0), affected: preview.affected || [] });
+      setSwapConfirmOpen(true);
+      return;
+    }
+    if (swapHighlightTimeoutRef.current) clearTimeout(swapHighlightTimeoutRef.current);
+    setSwapHighlightRowIds([row.id, prevRow.id]);
+    swapHighlightTimeoutRef.current = setTimeout(() => setSwapHighlightRowIds([]), 4000);
+    setClickedRowId(null);
     swapOrderBetweenRows(row.id, prevRow.id);
+    showSnackbar?.('Schedule updated');
   };
 
   const handleMoveDown = (index) => {
     if (index >= sortedDisplayedRows.length - 1) return;
     const row = sortedDisplayedRows[index];
     const nextRow = sortedDisplayedRows[index + 1];
-    if (row.productionLineId !== nextRow.productionLineId || (row.date || '') !== (nextRow.date || '')) return;
+    if (row.productionLineId !== nextRow.productionLineId) return;
+    const preview = typeof previewSwapOrderBetweenRows === 'function'
+      ? previewSwapOrderBetweenRows(row.id, nextRow.id)
+      : { canSwap: true, crossDay: false, changedCount: 2 };
+    const requiresConfirm = !!preview?.canSwap && ((preview?.crossDay) || (Number(preview?.changedCount || 0) > 2));
+    if (requiresConfirm) {
+      setSwapConfirmInfo({ rowIdA: row.id, rowIdB: nextRow.id, crossDay: !!preview.crossDay, changedCount: Number(preview.changedCount || 0), affected: preview.affected || [] });
+      setSwapConfirmOpen(true);
+      return;
+    }
+    if (swapHighlightTimeoutRef.current) clearTimeout(swapHighlightTimeoutRef.current);
+    setSwapHighlightRowIds([row.id, nextRow.id]);
+    swapHighlightTimeoutRef.current = setTimeout(() => setSwapHighlightRowIds([]), 4000);
+    setClickedRowId(null);
     swapOrderBetweenRows(row.id, nextRow.id);
+    showSnackbar?.('Schedule updated');
   };
 
   const isEditing = (rowId) => editingRowId === rowId;
@@ -530,7 +599,19 @@ export default function SchedulingView() {
           <table className="w-full border-collapse text-xs sm:text-sm md:text-base lg:text-lg xl:text-xl 2xl:text-2xl min-w-[800px]">
             <thead>
               <tr className="bg-surface-card-warm border-b border-gray-200">
-                <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap">Order</th>
+                <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap">
+                  <span className="inline-flex items-center gap-2">
+                    Order
+                    <button
+                      type="button"
+                      onClick={() => setOrderHelpOpen(true)}
+                      className="inline-flex items-center justify-center w-5 h-5 rounded-full border border-gray-300 text-gray-600 hover:bg-gray-100"
+                      aria-label="Learn about swap order"
+                    >
+                      ?
+                    </button>
+                  </span>
+                </th>
                 <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap w-10 sm:w-12">Actions</th>
                 <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[4rem]">Line</th>
                 <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[8rem]">
@@ -599,8 +680,18 @@ export default function SchedulingView() {
                   >
                     <Tooltip.Trigger asChild>
                   <tr
-                    className={`border-b border-gray-100 bg-surface-card hover:bg-gray-50/50 whitespace-nowrap ${clickedRowId === row.id ? 'bg-blue-50/80 ring-1 ring-blue-200 ring-inset' : ''}`}
-                    onPointerEnter={() => {
+                    className={`border-b border-gray-100 bg-surface-card hover:bg-gray-50/50 whitespace-nowrap ${
+                      clickedRowId === row.id ? 'bg-primary/20 ring-2 ring-primary/40 ring-inset' : ''
+                    } ${
+                      swapHighlightRowIds.includes(row.id) ? 'bg-primary/10 ring-2 ring-primary/30 ring-inset' : ''
+                    }`}
+                    onPointerEnter={(e) => {
+                      if (e?.target?.closest?.('[data-no-row-tooltip="true"]')) return;
+                      // Hovering another row should close any "clicked" pinned details + highlight
+                      if (clickedRowId && clickedRowId !== row.id) {
+                        if (clickTimeoutRef.current) clearTimeout(clickTimeoutRef.current);
+                        setClickedRowId(null);
+                      }
                       if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
                       hoverTimeoutRef.current = setTimeout(() => setHoveredRowId(row.id), 300);
                     }}
@@ -610,8 +701,10 @@ export default function SchedulingView() {
                       setHoveredRowId(null);
                     }}
                     onClick={(e) => {
+                      if (e?.target?.closest?.('[data-exclude-row-click="true"]')) return;
                       if (e.target.closest('button')) return;
                       if (clickTimeoutRef.current) clearTimeout(clickTimeoutRef.current);
+                      setSwapHighlightRowIds([]);
                       setClickedRowId(row.id);
                       clickTimeoutRef.current = setTimeout(() => {
                         setClickedRowId(null);
@@ -619,29 +712,49 @@ export default function SchedulingView() {
                       }, 4000);
                     }}
                   >
-                    <td className="py-2 sm:py-2.5 px-2 sm:px-4">
+                    <td className="py-2 sm:py-2.5 px-2 sm:px-4" data-no-row-tooltip="true" data-exclude-row-click="true">
                       <div className="flex gap-1">
-                        <button
-                          type="button"
-                          onClick={() => handleMoveUp(index)}
-                          disabled={index === 0 || (sortedDisplayedRows[index - 1] && (sortedDisplayedRows[index].productionLineId !== sortedDisplayedRows[index - 1].productionLineId || (sortedDisplayedRows[index].date || '') !== (sortedDisplayedRows[index - 1].date || '')))}
-                          className="p-1 rounded border border-gray-300 disabled:opacity-50 hover:bg-gray-100 text-inherit"
-                          aria-label="Swap order with slot above (same line and date)"
-                        >
-                          ↑
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleMoveDown(index)}
-                          disabled={index === sortedDisplayedRows.length - 1 || (sortedDisplayedRows[index + 1] && (sortedDisplayedRows[index].productionLineId !== sortedDisplayedRows[index + 1].productionLineId || (sortedDisplayedRows[index].date || '') !== (sortedDisplayedRows[index + 1].date || '')))}
-                          className="p-1 rounded border border-gray-300 disabled:opacity-50 hover:bg-gray-100 text-inherit"
-                          aria-label="Swap order with slot below (same line and date)"
-                        >
-                          ↓
-                        </button>
+                        <Tooltip.Root>
+                          <Tooltip.Trigger asChild>
+                            <button
+                              type="button"
+                              onClick={() => handleMoveUp(index)}
+                              disabled={index === 0 || (sortedDisplayedRows[index - 1] && (sortedDisplayedRows[index].productionLineId !== sortedDisplayedRows[index - 1].productionLineId))}
+                              className="p-1 rounded border border-gray-300 disabled:opacity-50 hover:bg-gray-100 text-inherit"
+                              aria-label="Move to previous schedule slot"
+                            >
+                              ↑
+                            </button>
+                          </Tooltip.Trigger>
+                          <Tooltip.Portal>
+                            <Tooltip.Content side="right" className="z-[80] rounded-md bg-gray-900 text-white px-2 py-1 text-xs shadow-lg max-w-[220px]">
+                              Move to the previous schedule slot. Times may reflow.
+                              <Tooltip.Arrow className="fill-gray-900" />
+                            </Tooltip.Content>
+                          </Tooltip.Portal>
+                        </Tooltip.Root>
+                        <Tooltip.Root>
+                          <Tooltip.Trigger asChild>
+                            <button
+                              type="button"
+                              onClick={() => handleMoveDown(index)}
+                              disabled={index === sortedDisplayedRows.length - 1 || (sortedDisplayedRows[index + 1] && (sortedDisplayedRows[index].productionLineId !== sortedDisplayedRows[index + 1].productionLineId))}
+                              className="p-1 rounded border border-gray-300 disabled:opacity-50 hover:bg-gray-100 text-inherit"
+                              aria-label="Move to next schedule slot"
+                            >
+                              ↓
+                            </button>
+                          </Tooltip.Trigger>
+                          <Tooltip.Portal>
+                            <Tooltip.Content side="right" className="z-[80] rounded-md bg-gray-900 text-white px-2 py-1 text-xs shadow-lg max-w-[220px]">
+                              Move to the next schedule slot. Times may reflow.
+                              <Tooltip.Arrow className="fill-gray-900" />
+                            </Tooltip.Content>
+                          </Tooltip.Portal>
+                        </Tooltip.Root>
                       </div>
                     </td>
-                    <td className="py-2 sm:py-2.5 px-2 sm:px-4">
+                    <td className="py-2 sm:py-2.5 px-2 sm:px-4" data-exclude-row-click="true">
                       <div className="flex items-center gap-1">
                         <button
                           type="button"
@@ -1204,10 +1317,102 @@ export default function SchedulingView() {
                     setTimeConflictOpen(false);
                   }
                 }}
-                className="px-4 py-2 rounded-lg bg-primary text-white text-sm font-medium hover:bg-primary-dark"
+                disabled={timeConflictCountdown > 0}
+                className="px-4 py-2 rounded-lg bg-primary text-white text-sm font-medium hover:bg-primary-dark disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                Proceed & adjust schedule
+                {timeConflictCountdown > 0 ? `Proceed & adjust schedule (${timeConflictCountdown})` : 'Proceed & adjust schedule'}
               </button>
+            </div>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
+
+      <Dialog.Root open={swapConfirmOpen} onOpenChange={setSwapConfirmOpen}>
+        <Dialog.Portal>
+          <Dialog.Overlay className="fixed inset-0 bg-black/50 z-50 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0" />
+          <Dialog.Content className="fixed left-1/2 top-1/2 z-[60] w-full max-w-md max-h-[90vh] -translate-x-1/2 -translate-y-1/2 rounded-lg border border-gray-200 bg-white shadow-lg p-4">
+            <Dialog.Title className="text-lg font-semibold text-gray-900">This move will shift the schedule</Dialog.Title>
+            <Dialog.Description className="mt-2 text-sm text-gray-700 space-y-2">
+              <div>Moving a batch into a different schedule slot can re-time other batches.</div>
+              {swapConfirmInfo?.crossDay ? (
+                <div><span className="font-medium">Cross-day move:</span> this will move a batch between dates (Today ↔ Tomorrow).</div>
+              ) : null}
+              <div><span className="font-medium">Batches affected:</span> {swapConfirmInfo?.changedCount ?? '—'}</div>
+              {swapConfirmInfo?.affected?.length ? (
+                <ul className="mt-2 list-disc pl-5 text-xs text-gray-600 space-y-1">
+                  {swapConfirmInfo.affected.slice(0, 5).map((a) => (
+                    <li key={a.id}>
+                      {a.product || '—'} • {formatTime12h(a.from.startSponge)}–{formatTime12h(a.from.endBatch)} ({formatDateRelative(a.from.date)}) → {formatTime12h(a.to.startSponge)}–{formatTime12h(a.to.endBatch)} ({formatDateRelative(a.to.date)})
+                    </li>
+                  ))}
+                  {swapConfirmInfo.affected.length > 5 ? <li>…and {swapConfirmInfo.affected.length - 5} more</li> : null}
+                </ul>
+              ) : null}
+            </Dialog.Description>
+            <div className="mt-4 flex justify-end gap-2">
+              <Dialog.Close asChild>
+                <button
+                  type="button"
+                  className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 text-sm font-medium hover:bg-gray-50"
+                  onClick={() => setSwapConfirmInfo(null)}
+                >
+                  Cancel
+                </button>
+              </Dialog.Close>
+              <button
+                type="button"
+                onClick={() => {
+                  if (!swapConfirmInfo?.rowIdA || !swapConfirmInfo?.rowIdB) return;
+                  if (swapHighlightTimeoutRef.current) clearTimeout(swapHighlightTimeoutRef.current);
+                  setSwapHighlightRowIds([swapConfirmInfo.rowIdA, swapConfirmInfo.rowIdB]);
+                  swapHighlightTimeoutRef.current = setTimeout(() => setSwapHighlightRowIds([]), 4000);
+                  setClickedRowId(null);
+                  swapOrderBetweenRows(swapConfirmInfo.rowIdA, swapConfirmInfo.rowIdB);
+                  showSnackbar?.(`Schedule updated (${swapConfirmInfo.changedCount || 0} batches re-timed)`);
+                  setSwapConfirmOpen(false);
+                  setSwapConfirmInfo(null);
+                }}
+                disabled={swapConfirmCountdown > 0}
+                className="px-4 py-2 rounded-lg bg-primary text-white text-sm font-medium hover:bg-primary-dark disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {swapConfirmCountdown > 0 ? `Proceed & reflow schedule (${swapConfirmCountdown})` : 'Proceed & reflow schedule'}
+              </button>
+            </div>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
+
+      <Dialog.Root open={orderHelpOpen} onOpenChange={setOrderHelpOpen}>
+        <Dialog.Portal>
+          <Dialog.Overlay className="fixed inset-0 bg-black/50 z-50 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0" />
+          <Dialog.Content className="fixed left-1/2 top-1/2 z-[60] w-full max-w-lg max-h-[90vh] -translate-x-1/2 -translate-y-1/2 rounded-lg border border-gray-200 bg-white shadow-lg p-4">
+            <Dialog.Title className="text-lg font-semibold text-gray-900">How “Order” (↑/↓) works</Dialog.Title>
+            <Dialog.Description className="mt-2 text-sm text-gray-700 space-y-2">
+              <div>
+                The ↑/↓ buttons move a batch into a different <span className="font-medium">schedule slot</span> on the same production line.
+                This is not just a visual reorder. Meaning, it can change <span className="font-medium">Start Sponge</span>, <span className="font-medium">End Dough</span>, and <span className="font-medium">End Batch</span> times for downstream batches.
+              </div>
+              <div className="text-sm text-gray-700">
+                <div className="font-medium">What changes</div>
+                <ul className="list-disc pl-5 mt-1 space-y-1">
+                  <li><span className="font-medium">The moved batch</span> takes the target slot’s start time/date.</li>
+                  <li><span className="font-medium">Batches after that point</span> are re-timed using your line rule (pipelined stagger or end-batch chaining), including midnight rollover.</li>
+                  <li>Moves can cross days (Today ↔ Tomorrow) when the target slot is on a different date.</li>
+                </ul>
+              </div>
+              <div className="text-sm text-gray-700">
+                <div className="font-medium">Confirmation</div>
+                <div className="mt-1">
+                  For big impacts (cross-day or more than 2 batches re-timed), you’ll see a confirmation modal with a before → after preview.
+                </div>
+              </div>
+            </Dialog.Description>
+            <div className="mt-4 flex justify-end">
+              <Dialog.Close asChild>
+                <button type="button" className="px-4 py-2 rounded-lg bg-primary text-white text-sm font-medium hover:bg-primary-dark">
+                  Got it
+                </button>
+              </Dialog.Close>
             </div>
           </Dialog.Content>
         </Dialog.Portal>
@@ -1217,49 +1422,88 @@ export default function SchedulingView() {
         <Dialog.Portal>
           <Dialog.Overlay className="fixed inset-0 bg-black/50 z-40 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0" />
           <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-full max-w-md -translate-x-1/2 -translate-y-1/2 rounded-lg border border-gray-200 bg-white shadow-lg p-4">
-            <Dialog.Title className="text-lg font-semibold text-gray-900">Delete in-progress line?</Dialog.Title>
-            <Dialog.Description className="mt-2 text-sm text-gray-700">
-              This production order is currently <span className="font-semibold">In Progress</span>. Deleting it will cancel the remaining progress on this line in the schedule.
-              To confirm, type <span className="font-mono font-semibold">Delete to Cancel Progress Line</span> below, then click Delete.
-            </Dialog.Description>
-            <div className="mt-4">
-              <label className="block text-xs font-medium text-gray-600 mb-1">Confirmation phrase</label>
-              <input
-                type="text"
-                value={deleteConfirmText}
-                onChange={(e) => setDeleteConfirmText(e.target.value)}
-                className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900 text-sm"
-                placeholder="Delete to Cancel Progress Line"
-              />
-            </div>
-            <div className="mt-4 flex justify-end gap-2">
-              <Dialog.Close asChild>
-                <button
-                  type="button"
-                  className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 text-sm font-medium hover:bg-gray-50"
-                >
-                  Cancel
-                </button>
-              </Dialog.Close>
-              <button
-                type="button"
-                onClick={() => {
-                  if (!deleteTargetRow) return;
-                  if (deleteConfirmText !== 'Delete to Cancel Progress Line') return;
-                  const result = deleteBatch(deleteTargetRow.id);
-                  if (result && !result.success && result.error) {
-                    showSnackbar?.(result.error);
-                  }
-                  setDeleteConfirmOpen(false);
-                  setDeleteTargetRow(null);
-                  setDeleteConfirmText('');
-                }}
-                disabled={deleteConfirmText !== 'Delete to Cancel Progress Line'}
-                className="px-4 py-2 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                Delete
-              </button>
-            </div>
+            {(() => {
+              const status = deleteTargetRow ? getProductionStatus(deleteTargetRow, statusTick) : null;
+              const isInProgress = status === 'In Progress';
+              return (
+                <>
+                  <Dialog.Title className="text-lg font-semibold text-gray-900">
+                    {isInProgress ? 'Delete in-progress line?' : 'Delete batch?'}
+                  </Dialog.Title>
+                  <Dialog.Description className="mt-2 text-sm text-gray-700">
+                    <div>
+                      {isInProgress ? (
+                        <>
+                          This production order is currently <span className="font-semibold">In Progress</span>. Deleting it will cancel the remaining progress on this line in the schedule.
+                        </>
+                      ) : (
+                        <>This will permanently delete this batch.</>
+                      )}
+                    </div>
+                    <div className="mt-2">
+                      <span className="font-medium">Note:</span> Deleting does <span className="font-semibold">not</span> adjust or re-time other batches. Time slots before and after will stay as-is.
+                    </div>
+                    {isInProgress ? (
+                      <div className="mt-2">
+                        To confirm, type <span className="font-mono font-semibold">Delete to Cancel Progress Line</span> below, then click Delete.
+                      </div>
+                    ) : null}
+                  </Dialog.Description>
+                  {isInProgress ? (
+                    <div className="mt-4">
+                      <label className="block text-xs font-medium text-gray-600 mb-1">Confirmation phrase</label>
+                      <input
+                        type="text"
+                        value={deleteConfirmText}
+                        onChange={(e) => setDeleteConfirmText(e.target.value)}
+                        className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900 text-sm"
+                        placeholder="Delete to Cancel Progress Line"
+                      />
+                    </div>
+                  ) : null}
+                  <div className="mt-4 flex justify-end gap-2">
+                    <Dialog.Close asChild>
+                      <button
+                        type="button"
+                        className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 text-sm font-medium hover:bg-gray-50"
+                        onClick={() => {
+                          setDeleteTargetRow(null);
+                          setDeleteConfirmText('');
+                        }}
+                      >
+                        Cancel
+                      </button>
+                    </Dialog.Close>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!deleteTargetRow) return;
+                        const statusNow = getProductionStatus(deleteTargetRow, statusTick);
+                        const needsPhrase = statusNow === 'In Progress';
+                        if (needsPhrase && deleteConfirmText !== 'Delete to Cancel Progress Line') return;
+                        const result = deleteBatch(deleteTargetRow.id);
+                        if (result && !result.success && result.error) showSnackbar?.(result.error);
+                        setDeleteConfirmOpen(false);
+                        setDeleteTargetRow(null);
+                        setDeleteConfirmText('');
+                        setSwapHighlightRowIds([]);
+                        setClickedRowId(null);
+                      }}
+                      disabled={(() => {
+                        if (!deleteTargetRow) return true;
+                        const statusNow = getProductionStatus(deleteTargetRow, statusTick);
+                        const needsPhrase = statusNow === 'In Progress';
+                        if (deleteConfirmCountdown > 0) return true;
+                        return needsPhrase ? deleteConfirmText !== 'Delete to Cancel Progress Line' : false;
+                      })()}
+                      className="px-4 py-2 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {deleteConfirmCountdown > 0 ? `Delete (${deleteConfirmCountdown})` : 'Delete'}
+                    </button>
+                  </div>
+                </>
+              );
+            })()}
           </Dialog.Content>
         </Dialog.Portal>
       </Dialog.Root>

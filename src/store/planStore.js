@@ -114,9 +114,146 @@ function buildSnapshot() {
     addBatchesFromModal,
     previewInsertBatchesWithReflow,
     insertBatchesWithReflow,
+    previewSwapOrderBetweenRows,
     reorderRows,
     swapOrderBetweenRows,
     deleteBatch,
+  };
+}
+
+export function previewSwapOrderBetweenRows(rowIdA, rowIdB) {
+  const idxA = state.rows.findIndex((r) => r.id === rowIdA);
+  const idxB = state.rows.findIndex((r) => r.id === rowIdB);
+  if (idxA === -1 || idxB === -1) return { canSwap: false, reason: 'Row not found' };
+  const rowA = state.rows[idxA];
+  const rowB = state.rows[idxB];
+  const lineId = rowA.productionLineId || '';
+  if (!lineId || (rowB.productionLineId || '') !== lineId) return { canSwap: false, reason: 'Different line' };
+
+  const lineRows = state.rows
+    .filter((r) => (r.productionLineId || '') === lineId)
+    .map((r) => ({ r, se: computeRowStartEndMs(r) }))
+    .sort((a, b) => (a.se?.startMs ?? 0) - (b.se?.startMs ?? 0));
+  if (lineRows.length === 0) return { canSwap: false, reason: 'No rows on line' };
+
+  const slots = lineRows.map((x) => ({
+    id: x.r.id,
+    date: (x.r.date || '').split('T')[0],
+    startSponge: x.r.startSponge,
+  }));
+
+  const ids = slots.map((s) => s.id);
+  const posA = ids.indexOf(rowIdA);
+  const posB = ids.indexOf(rowIdB);
+  if (posA === -1 || posB === -1) return { canSwap: false, reason: 'Row not in line ordering' };
+  const crossDay = (slots[posA]?.date || '') !== (slots[posB]?.date || '');
+
+  // Simulate the same reflow as swapOrderBetweenRows to count impacts.
+  [ids[posA], ids[posB]] = [ids[posB], ids[posA]];
+  const startPos = Math.min(posA, posB);
+  const byId = new Map(lineRows.map((x) => [x.r.id, x.r]));
+  const staggerMinutes = getStaggerMinutesForLine(lineId);
+
+  const updatedById = new Map();
+  let currentDate = slots[startPos]?.date || slots[0]?.date || '';
+  let prevStart = slots[startPos]?.startSponge || slots[0]?.startSponge || '';
+  let prevEndBatch = prevStart;
+  if (startPos > 0) {
+    const prevId = slots[startPos - 1].id;
+    const prevRow = byId.get(prevId);
+    if (prevRow) {
+      currentDate = (prevRow.date || '').split('T')[0] || currentDate;
+      prevStart = prevRow.startSponge || prevStart;
+      prevEndBatch = prevRow.endBatch || prevEndBatch;
+    }
+  }
+  if (!currentDate || !prevStart) return { canSwap: false, reason: 'Invalid anchor' };
+
+  ids.forEach((id, i) => {
+    if (i < startPos) return;
+    const original = byId.get(id);
+    if (!original) return;
+
+    if (i > startPos) {
+      const prevSlot = slots[i - 1];
+      const thisSlot = slots[i];
+      if (prevSlot?.date && thisSlot?.date && thisSlot.date !== prevSlot.date) {
+        currentDate = thisSlot.date;
+        prevStart = thisSlot.startSponge || prevStart;
+        prevEndBatch = thisSlot.startSponge || prevEndBatch;
+      }
+    }
+
+    let startSponge = '';
+    if (i === startPos) {
+      const slot = slots[startPos];
+      currentDate = slot?.date || currentDate;
+      startSponge = slot?.startSponge || prevStart;
+      prevStart = startSponge;
+      prevEndBatch = startSponge;
+    } else if (staggerMinutes > 0) {
+      startSponge = addMinutesToTime(prevStart, staggerMinutes);
+      if (parseTimeToMinutes(startSponge) < parseTimeToMinutes(prevStart) && startSponge !== prevStart) {
+        currentDate = addDays(currentDate, 1);
+      }
+    } else {
+      startSponge = prevEndBatch;
+      if (parseTimeToMinutes(prevEndBatch) <= parseTimeToMinutes(prevStart) && prevEndBatch !== prevStart) {
+        currentDate = addDays(currentDate, 1);
+      }
+    }
+
+    const moved = normalizeRow({
+      ...original,
+      productionLineId: lineId,
+      date: currentDate,
+      startSponge,
+    });
+    const { endDough, endBatch } = recomputeEndTimesForRow(moved);
+    moved.endDough = endDough;
+    moved.endBatch = endBatch;
+    updatedById.set(id, moved);
+    prevStart = moved.startSponge;
+    prevEndBatch = moved.endBatch;
+  });
+
+  const changedRowIds = [];
+  for (const [id, moved] of updatedById.entries()) {
+    const orig = byId.get(id);
+    if (!orig) continue;
+    if ((orig.date || '') !== (moved.date || '') || (orig.startSponge || '') !== (moved.startSponge || '') || (orig.endBatch || '') !== (moved.endBatch || '')) {
+      changedRowIds.push(id);
+    }
+  }
+
+  const affected = changedRowIds.map((id) => {
+    const orig = byId.get(id);
+    const moved = updatedById.get(id);
+    return {
+      id,
+      product: orig?.product ?? moved?.product ?? '',
+      from: {
+        date: (orig?.date || '').split('T')[0],
+        startSponge: orig?.startSponge ?? '',
+        endDough: orig?.endDough ?? '',
+        endBatch: orig?.endBatch ?? '',
+      },
+      to: {
+        date: (moved?.date || '').split('T')[0],
+        startSponge: moved?.startSponge ?? '',
+        endDough: moved?.endDough ?? '',
+        endBatch: moved?.endBatch ?? '',
+      },
+    };
+  });
+
+  return {
+    canSwap: true,
+    productionLineId: lineId,
+    crossDay,
+    changedRowIds,
+    changedCount: changedRowIds.length,
+    affected,
   };
 }
 
@@ -657,16 +794,10 @@ export function reorderRows(fromIndex, toIndex) {
   emit();
 }
 
-/** Order fields that move with the "order" when swapping slots; slot keeps id, productionLineId, date, startSponge (and we recompute endDough, endBatch). */
-const ORDER_FIELDS = [
-  'product', 'salesOrder', 'soQty', 'soCoExcess', 'exchangeForLoss', 'excess', 'samples',
-  'carryOverExcess', 'theorExcess', 'theorOutputOverride', 'theorOutput', 'capacity', 'procTime',
-];
-
 /**
- * Swap which order runs in which slot: only order data (product, Batch Qty, Sales Order, etc.) is swapped;
- * each row keeps its slot's Start Sponge, and End Dough / End Batch are recomputed for the (possibly new) product.
- * Both rows must have the same productionLineId and date. Use for Order column move up/down within same line+date.
+ * Reorder schedule sequence on a production line: swap two rows' positions in the line timeline,
+ * then reflow Start Sponge / End Dough / End Batch forward using pipelining rules.
+ * Rows must belong to the same production line. Dates are allowed to change via rollover during reflow.
  */
 export function swapOrderBetweenRows(rowIdA, rowIdB) {
   const idxA = state.rows.findIndex((r) => r.id === rowIdA);
@@ -674,29 +805,110 @@ export function swapOrderBetweenRows(rowIdA, rowIdB) {
   if (idxA === -1 || idxB === -1) return;
   const rowA = state.rows[idxA];
   const rowB = state.rows[idxB];
-  if ((rowA.productionLineId || '') !== (rowB.productionLineId || '') || (rowA.date || '') !== (rowB.date || '')) return;
+  const lineId = rowA.productionLineId || '';
+  if (!lineId || (rowB.productionLineId || '') !== lineId) return;
 
-  const orderFromA = {};
-  const orderFromB = {};
-  ORDER_FIELDS.forEach((f) => {
-    orderFromA[f] = rowA[f];
-    orderFromB[f] = rowB[f];
+  const lineRows = state.rows
+    .filter((r) => (r.productionLineId || '') === lineId)
+    .map((r) => ({ r, se: computeRowStartEndMs(r) }))
+    .sort((a, b) => (a.se?.startMs ?? 0) - (b.se?.startMs ?? 0));
+  if (lineRows.length === 0) return;
+
+  // Slots: preserve the existing slot start (date + time) for the first changed position,
+  // then reflow forward from there using pipelining rules.
+  const slots = lineRows.map((x) => ({
+    id: x.r.id,
+    date: (x.r.date || '').split('T')[0],
+    startSponge: x.r.startSponge,
+  }));
+
+  const ids = slots.map((s) => s.id);
+  const posA = ids.indexOf(rowIdA);
+  const posB = ids.indexOf(rowIdB);
+  if (posA === -1 || posB === -1) return;
+  [ids[posA], ids[posB]] = [ids[posB], ids[posA]];
+  const startPos = Math.min(posA, posB);
+
+  const byId = new Map(lineRows.map((x) => [x.r.id, x.r]));
+  const staggerMinutes = getStaggerMinutesForLine(lineId);
+
+  const updatedById = new Map();
+  // Seed prevStart/prevEndBatch from the row *before* the first changed position (unchanged history).
+  let currentDate = slots[startPos]?.date || slots[0]?.date || '';
+  let prevStart = slots[startPos]?.startSponge || slots[0]?.startSponge || '';
+  let prevEndBatch = prevStart;
+  if (startPos > 0) {
+    const prevId = slots[startPos - 1].id;
+    const prevRow = byId.get(prevId);
+    if (prevRow) {
+      currentDate = (prevRow.date || '').split('T')[0] || currentDate;
+      prevStart = prevRow.startSponge || prevStart;
+      prevEndBatch = prevRow.endBatch || prevEndBatch;
+    }
+  }
+  if (!currentDate || !prevStart) return;
+
+  ids.forEach((id, i) => {
+    if (i < startPos) return; // unchanged portion stays as-is
+    const original = byId.get(id);
+    if (!original) return;
+
+    // Respect existing day boundaries in the schedule.
+    // If the original slots jump to a different date, start a new anchored segment there
+    // (so "tomorrow 4:56 PM" stays tomorrow unless it naturally rolls over by midnight).
+    if (i > startPos) {
+      const prevSlot = slots[i - 1];
+      const thisSlot = slots[i];
+      if (prevSlot?.date && thisSlot?.date && thisSlot.date !== prevSlot.date) {
+        currentDate = thisSlot.date;
+        prevStart = thisSlot.startSponge || prevStart;
+        prevEndBatch = thisSlot.startSponge || prevEndBatch;
+      }
+    }
+
+    // First changed position: take the slot's existing start (this is the "swap into that time" behavior).
+    // Subsequent positions: reflow forward.
+    let startSponge = '';
+    if (i === startPos) {
+      const slot = slots[startPos];
+      currentDate = slot?.date || currentDate;
+      startSponge = slot?.startSponge || prevStart;
+      // Reset segment anchor at the first changed slot.
+      prevStart = startSponge;
+      prevEndBatch = startSponge;
+    } else if (staggerMinutes > 0) {
+      startSponge = addMinutesToTime(prevStart, staggerMinutes);
+      if (parseTimeToMinutes(startSponge) < parseTimeToMinutes(prevStart) && startSponge !== prevStart) {
+        currentDate = addDays(currentDate, 1);
+      }
+    } else {
+      startSponge = prevEndBatch;
+      if (parseTimeToMinutes(prevEndBatch) <= parseTimeToMinutes(prevStart) && prevEndBatch !== prevStart) {
+        currentDate = addDays(currentDate, 1);
+      }
+    }
+
+    const moved = normalizeRow({
+      ...original,
+      productionLineId: lineId,
+      date: currentDate,
+      startSponge,
+    });
+    const { endDough, endBatch } = recomputeEndTimesForRow(moved);
+    moved.endDough = endDough;
+    moved.endBatch = endBatch;
+
+    updatedById.set(id, moved);
+    prevStart = moved.startSponge;
+    prevEndBatch = moved.endBatch;
   });
-
-  const newA = { ...rowA, ...orderFromB };
-  const newB = { ...rowB, ...orderFromA };
-  const { endDough: endDoughA, endBatch: endBatchA } = recomputeEndTimesForRow(newA);
-  const { endDough: endDoughB, endBatch: endBatchB } = recomputeEndTimesForRow(newB);
-  newA.endDough = endDoughA;
-  newA.endBatch = endBatchA;
-  newB.endDough = endDoughB;
-  newB.endBatch = endBatchB;
 
   const next = state.rows.map((r) => {
-    if (r.id === rowIdA) return normalizeRow(newA);
-    if (r.id === rowIdB) return normalizeRow(newB);
-    return r;
+    if ((r.productionLineId || '') !== lineId) return r;
+    const updated = updatedById.get(r.id);
+    return updated ? normalizeRow(updated) : r;
   });
+
   state = { ...state, rows: next };
   persistRows(state.rows);
   pushToApi(state.planId, state.planDate, state.rows);
