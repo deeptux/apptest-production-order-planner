@@ -14,7 +14,7 @@ import { getLines, getLineById } from '../store/productionLinesStore';
 const FIELDS_THAT_TRIGGER_AUTO_ADJUST = ['startSponge', 'product'];
 
 export default function SchedulingView() {
-  const { planDate, setPlanDate, rows, setRows, reorderRows, swapOrderBetweenRows, addBatch, addBatchesFromModal, deleteBatch } = usePlan();
+  const { planDate, setPlanDate, rows, setRows, reorderRows, swapOrderBetweenRows, addBatch, addBatchesFromModal, previewInsertBatchesWithReflow, insertBatchesWithReflow, deleteBatch } = usePlan();
   const { show: showSnackbar } = useSnackbar() ?? {};
   const formatTime12h = useCallback((hhmm) => {
     if (!hhmm || typeof hhmm !== 'string') return '—';
@@ -134,9 +134,13 @@ export default function SchedulingView() {
     theorOutputOverride: '',
   });
   const [addBatchValidationError, setAddBatchValidationError] = useState('');
+  const [timeConflictOpen, setTimeConflictOpen] = useState(false);
+  const [timeConflictInfo, setTimeConflictInfo] = useState({ affectedRowIds: [] });
+  const [pendingAddBatchPayload, setPendingAddBatchPayload] = useState(null);
   const [addBatchSelectedBatchIndex, setAddBatchSelectedBatchIndex] = useState(0);
   const [selectedLineId, setSelectedLineId] = useState('all');
   const [showAllDates, setShowAllDates] = useState(true);
+  const [dateTimeSort, setDateTimeSort] = useState({ key: null, dir: null }); // default uses DateTime Created desc
   const [hoveredRowId, setHoveredRowId] = useState(null);
   const [clickedRowId, setClickedRowId] = useState(null);
   const [statusTick, setStatusTick] = useState(() => Date.now());
@@ -174,12 +178,97 @@ export default function SchedulingView() {
   const displayedRows = showAllDates || !planDateStr
     ? rowsByLine
     : rowsByLine.filter((r) => r.date === planDateStr);
+  const sortedDisplayedRows = useMemo(() => {
+    const base = [...displayedRows];
+    const getCreatedMs = (r) => getCreatedAtMs(r) ?? 0;
+    const getStartMs = (r) => {
+      const d = (r.date || '').split('T')[0];
+      if (!d || !r.startSponge) return 0;
+      return new Date(`${d}T${r.startSponge}`).getTime();
+    };
+    const getEndMs = (r, endField) => {
+      const d = (r.date || '').split('T')[0];
+      const start = r.startSponge;
+      const end = r[endField];
+      if (!d || !start || !end) return 0;
+      const startM = parseTimeToMinutes(start);
+      const endM = parseTimeToMinutes(end);
+      let ms = new Date(`${d}T${end}`).getTime();
+      if (endM < startM) ms += 24 * 60 * 60 * 1000;
+      return ms;
+    };
+
+    // Default: DateTime Created desc (latest first)
+    const defaultCmp = (a, b) => getCreatedMs(b) - getCreatedMs(a);
+
+    const { key, dir } = dateTimeSort || {};
+    if (!key || !dir) return base.sort(defaultCmp);
+
+    const sign = dir === 'asc' ? 1 : -1;
+    const cmpNum = (va, vb) => (va - vb) * sign;
+
+    const keyCmp = (a, b) => {
+      if (key === 'createdAt') return cmpNum(getCreatedMs(a), getCreatedMs(b));
+      if (key === 'startSponge') return cmpNum(getStartMs(a), getStartMs(b));
+      if (key === 'endDough') return cmpNum(getEndMs(a, 'endDough'), getEndMs(b, 'endDough'));
+      if (key === 'endBatch') return cmpNum(getEndMs(a, 'endBatch'), getEndMs(b, 'endBatch'));
+      return 0;
+    };
+
+    return base.sort((a, b) => {
+      const c = keyCmp(a, b);
+      if (c !== 0) return c;
+      return defaultCmp(a, b);
+    });
+  }, [dateTimeSort, displayedRows, getCreatedAtMs]);
+
+  const toggleTriSort = useCallback((key) => {
+    setDateTimeSort((prev) => {
+      if (!prev || prev.key !== key) return { key, dir: 'desc' };
+      if (prev.dir === 'desc') return { key, dir: 'asc' };
+      if (prev.dir === 'asc') return { key: null, dir: null };
+      return { key, dir: 'desc' };
+    });
+  }, []);
+
+  const sortIndicator = useCallback((key) => {
+    if (dateTimeSort?.key !== key || !dateTimeSort?.dir) return '↕';
+    return dateTimeSort.dir === 'desc' ? '↓' : '↑';
+  }, [dateTimeSort]);
   const lineIdForNewBatch = selectedLineId && selectedLineId !== 'all' ? selectedLineId : getLines()[0]?.id;
   const recipeOptions = lineIdForNewBatch ? getRecipesForLine(lineIdForNewBatch) : [];
   const { orderBatch: orderBatchMap, lineBatch: lineBatchMap } = useMemo(
     () => getOrderBatchAndLineBatch(rows),
     [rows]
   );
+  const skuBatchOrderMap = useMemo(() => {
+    const ordinal = (n) => {
+      const s = ['th', 'st', 'nd', 'rd'];
+      const v = n % 100;
+      return n + (s[(v - 20) % 10] || s[v] || s[0]);
+    };
+    const bySku = {};
+    rows.forEach((r) => {
+      const ms = getCreatedAtMs(r);
+      const sku = formatSkuIdFromMs(ms);
+      if (!sku || sku === '—') return;
+      if (!bySku[sku]) bySku[sku] = [];
+      bySku[sku].push(r);
+    });
+    const out = {};
+    Object.keys(bySku).forEach((sku) => {
+      const list = [...bySku[sku]].sort((a, b) => {
+        const d = (a.date || '').localeCompare(b.date || '');
+        if (d !== 0) return d;
+        return parseTimeToMinutes(a.startSponge) - parseTimeToMinutes(b.startSponge);
+      });
+      const tail = sku.slice(-5);
+      list.forEach((r, i) => {
+        out[r.id] = `${tail}-${ordinal(i + 1)}`;
+      });
+    });
+    return out;
+  }, [formatSkuIdFromMs, getCreatedAtMs, rows]);
 
   const openAddBatchModal = useCallback(() => {
     const lineId = lineIdForNewBatch || getLines()[0]?.id || 'line-loaf';
@@ -229,7 +318,7 @@ export default function SchedulingView() {
       setAddBatchValidationError('Theoretical Output must be greater than 0 (set Sales Order, or use Exchange for LOSS, Excess, Samples, or override).');
       return;
     }
-    const result = addBatchesFromModal({
+    const payload = {
       productionLineId: f.productionLineId,
       date: f.date,
       startSponge: f.startSponge,
@@ -242,13 +331,27 @@ export default function SchedulingView() {
       excess: f.excess,
       samples: f.samples,
       theorOutputOverride: f.theorOutputOverride !== '' ? f.theorOutputOverride : undefined,
-    });
+    };
+
+    const preview = typeof previewInsertBatchesWithReflow === 'function'
+      ? previewInsertBatchesWithReflow(payload)
+      : { hasConflict: false, affectedRowIds: [], snappedTo: null };
+    if (preview?.hasConflict) {
+      setPendingAddBatchPayload(payload);
+      setTimeConflictInfo({ affectedRowIds: preview.affectedRowIds || [], snappedTo: preview.snappedTo || null });
+      setTimeConflictOpen(true);
+      return;
+    }
+
+    const result = typeof insertBatchesWithReflow === 'function'
+      ? insertBatchesWithReflow(payload)
+      : addBatchesFromModal(payload);
     if (result.success) {
       closeAddBatchModal();
     } else {
       setAddBatchValidationError(result.error || 'Could not add batch.');
     }
-  }, [addBatchForm, addBatchesFromModal, closeAddBatchModal]);
+  }, [addBatchForm, addBatchesFromModal, closeAddBatchModal, insertBatchesWithReflow, previewInsertBatchesWithReflow]);
 
   const handlePlanDateChange = (e) => {
     const v = e.target.value;
@@ -340,16 +443,16 @@ export default function SchedulingView() {
 
   const handleMoveUp = (index) => {
     if (index <= 0) return;
-    const row = displayedRows[index];
-    const prevRow = displayedRows[index - 1];
+    const row = sortedDisplayedRows[index];
+    const prevRow = sortedDisplayedRows[index - 1];
     if (row.productionLineId !== prevRow.productionLineId || (row.date || '') !== (prevRow.date || '')) return;
     swapOrderBetweenRows(row.id, prevRow.id);
   };
 
   const handleMoveDown = (index) => {
-    if (index >= displayedRows.length - 1) return;
-    const row = displayedRows[index];
-    const nextRow = displayedRows[index + 1];
+    if (index >= sortedDisplayedRows.length - 1) return;
+    const row = sortedDisplayedRows[index];
+    const nextRow = sortedDisplayedRows[index + 1];
     if (row.productionLineId !== nextRow.productionLineId || (row.date || '') !== (nextRow.date || '')) return;
     swapOrderBetweenRows(row.id, nextRow.id);
   };
@@ -430,23 +533,39 @@ export default function SchedulingView() {
                 <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap">Order</th>
                 <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap w-10 sm:w-12">Actions</th>
                 <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[4rem]">Line</th>
-                <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[7rem]">Date Created</th>
+                <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[8rem]">
+                  <button type="button" onClick={() => toggleTriSort('createdAt')} className="inline-flex items-center gap-1 hover:text-gray-900">
+                    DateTime Created <span className="text-gray-500">{sortIndicator('createdAt')}</span>
+                  </button>
+                </th>
                 <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[7rem]">SKU ID#</th>
                 <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[6rem]">Product</th>
                 <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[4rem]">Sales Order</th>
                 <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[5rem]">Total Qty</th>
                 <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[4rem]">Batch Qty</th>
-                <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[4rem]">Start Sponge</th>
-                <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[4rem]">End Dough</th>
-                <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[4rem]">End Batch</th>
+                <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[5rem]">
+                  <button type="button" onClick={() => toggleTriSort('startSponge')} className="inline-flex items-center gap-1 hover:text-gray-900">
+                    Start Sponge <span className="text-gray-500">{sortIndicator('startSponge')}</span>
+                  </button>
+                </th>
+                <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[5rem]">
+                  <button type="button" onClick={() => toggleTriSort('endDough')} className="inline-flex items-center gap-1 hover:text-gray-900">
+                    End Dough <span className="text-gray-500">{sortIndicator('endDough')}</span>
+                  </button>
+                </th>
+                <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[5rem]">
+                  <button type="button" onClick={() => toggleTriSort('endBatch')} className="inline-flex items-center gap-1 hover:text-gray-900">
+                    End Batch <span className="text-gray-500">{sortIndicator('endBatch')}</span>
+                  </button>
+                </th>
                 <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[5rem]">Process Time</th>
                 <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[3rem]">Order Batch</th>
-                <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[3rem]">Line Batch</th>
+                <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[6rem]">SKU Batch Order</th>
                 <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[4rem]">Production Status</th>
               </tr>
             </thead>
             <tbody>
-              {displayedRows.map((row, index) => {
+              {sortedDisplayedRows.map((row, index) => {
                 const displayProcTime = getTotalProcessMinutesForLine(row.product, row.productionLineId) || getTotalProcessMinutes(row.product) || row.procTime || '';
                 const capacityDisplay = getCapacityForProduct(row.product, row.productionLineId) ?? row.capacity ?? '—';
                 const doughDisplay = getDoughWeightKgForProduct(row.product, row.productionLineId) != null ? `${getDoughWeightKgForProduct(row.product, row.productionLineId)} kg` : '—';
@@ -505,7 +624,7 @@ export default function SchedulingView() {
                         <button
                           type="button"
                           onClick={() => handleMoveUp(index)}
-                          disabled={index === 0 || (displayedRows[index - 1] && (displayedRows[index].productionLineId !== displayedRows[index - 1].productionLineId || (displayedRows[index].date || '') !== (displayedRows[index - 1].date || '')))}
+                          disabled={index === 0 || (sortedDisplayedRows[index - 1] && (sortedDisplayedRows[index].productionLineId !== sortedDisplayedRows[index - 1].productionLineId || (sortedDisplayedRows[index].date || '') !== (sortedDisplayedRows[index - 1].date || '')))}
                           className="p-1 rounded border border-gray-300 disabled:opacity-50 hover:bg-gray-100 text-inherit"
                           aria-label="Swap order with slot above (same line and date)"
                         >
@@ -514,7 +633,7 @@ export default function SchedulingView() {
                         <button
                           type="button"
                           onClick={() => handleMoveDown(index)}
-                          disabled={index === displayedRows.length - 1 || (displayedRows[index + 1] && (displayedRows[index].productionLineId !== displayedRows[index + 1].productionLineId || (displayedRows[index].date || '') !== (displayedRows[index + 1].date || '')))}
+                          disabled={index === sortedDisplayedRows.length - 1 || (sortedDisplayedRows[index + 1] && (sortedDisplayedRows[index].productionLineId !== sortedDisplayedRows[index + 1].productionLineId || (sortedDisplayedRows[index].date || '') !== (sortedDisplayedRows[index + 1].date || '')))}
                           className="p-1 rounded border border-gray-300 disabled:opacity-50 hover:bg-gray-100 text-inherit"
                           aria-label="Swap order with slot below (same line and date)"
                         >
@@ -543,7 +662,30 @@ export default function SchedulingView() {
                       </div>
                     </td>
                     <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-700 text-inherit">{getLineById(row.productionLineId)?.name ?? '—'}</td>
-                    <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-700 text-inherit whitespace-nowrap">{formatDateCreated(row.createdAt ?? '')}</td>
+                    <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-700 text-inherit whitespace-nowrap">
+                      <div className="leading-tight">
+                        <div>{(() => {
+                          const ms = getCreatedAtMs(row);
+                          if (!ms) return formatDateCreated(row.createdAt ?? '');
+                          const d = new Date(ms);
+                          if (Number.isNaN(d.getTime())) return formatDateCreated(row.createdAt ?? '');
+                          const y = d.getFullYear();
+                          const m = String(d.getMonth() + 1).padStart(2, '0');
+                          const day = String(d.getDate()).padStart(2, '0');
+                          return formatDateRelative(`${y}-${m}-${day}`);
+                        })()}</div>
+                        <div className="text-[0.65rem] sm:text-xs text-gray-500">
+                          {(() => {
+                            const ms = getCreatedAtMs(row);
+                            if (!ms) return '—';
+                            const d = new Date(ms);
+                            if (Number.isNaN(d.getTime())) return '—';
+                            const hhmm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+                            return formatTime12h(hhmm);
+                          })()}
+                        </div>
+                      </div>
+                    </td>
                     <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-700 text-inherit tabular-nums whitespace-nowrap">{formatSkuIdFromMs(getCreatedAtMs(row))}</td>
                     <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-800 text-inherit">{row.product ?? '—'}</td>
                     <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-800 text-inherit">{row.salesOrder ?? '—'}</td>
@@ -572,8 +714,13 @@ export default function SchedulingView() {
                       </div>
                     </td>
                     <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-700 text-inherit whitespace-nowrap tabular-nums">{formatMinutesAsHours(displayProcTime)}</td>
-                    <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-700 text-inherit">{orderBatchMap[row.id] ?? '—'}</td>
-                    <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-700 text-inherit">{lineBatchMap[row.id] ?? '—'}</td>
+                    <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-700 text-inherit whitespace-nowrap">
+                      <div className="leading-tight">
+                        <div>{orderBatchMap[row.id] ?? '—'}</div>
+                        <div className="text-[0.65rem] sm:text-xs text-gray-500">{formatDateRelative(row.date)}</div>
+                      </div>
+                    </td>
+                    <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-700 text-inherit whitespace-nowrap tabular-nums">{skuBatchOrderMap[row.id] ?? '—'}</td>
                     <td className="py-2 sm:py-2.5 px-2 sm:px-4">
                       {(() => {
                         const status = getProductionStatus(row, statusTick);
@@ -989,6 +1136,77 @@ export default function SchedulingView() {
                 className="px-4 py-2 rounded-lg bg-primary text-white text-sm font-medium hover:bg-primary-dark disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 Add batch
+              </button>
+            </div>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
+
+      <Dialog.Root open={timeConflictOpen} onOpenChange={setTimeConflictOpen}>
+        <Dialog.Portal>
+          <Dialog.Overlay className="fixed inset-0 bg-black/50 z-50 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0" />
+          <Dialog.Content className="fixed left-1/2 top-1/2 z-[60] w-full max-w-lg max-h-[90vh] -translate-x-1/2 -translate-y-1/2 rounded-lg border border-gray-200 bg-white shadow-lg p-4 flex flex-col">
+            <Dialog.Title className="text-lg font-semibold text-gray-900">Time Conflict Affecting Other Batches</Dialog.Title>
+            <Dialog.Description className="mt-2 text-sm text-gray-700">
+              The time you entered conflicts with the current schedule. If you proceed, this batch will be snapped to the nearest upcoming slot on this line, and the affected batches from that slot onward will be pushed forward and recalculated.
+            </Dialog.Description>
+            <div className="mt-3 text-sm text-gray-800">
+              {timeConflictInfo?.snappedTo ? (
+                <div className="text-xs text-gray-600">
+                  Snapped to: <span className="font-medium text-gray-800">{formatTime12h(timeConflictInfo.snappedTo.startSponge)}</span>{' '}
+                  <span className="text-gray-500">({formatDateRelative(timeConflictInfo.snappedTo.date)})</span>
+                </div>
+              ) : null}
+              <div className="font-medium">Affected batches: {timeConflictInfo?.affectedRowIds?.length || 0}</div>
+              {(() => {
+                const ids = timeConflictInfo?.affectedRowIds || [];
+                const affected = rows.filter((r) => ids.includes(r.id));
+                const preview = affected
+                  .slice(0, 5)
+                  .map((r) => `${r.product || '—'} • ${formatTime12h(r.startSponge)}–${formatTime12h(r.endBatch)} (${formatDateRelative(r.date)})`);
+                return preview.length > 0 ? (
+                  <ul className="mt-2 list-disc pl-5 text-xs text-gray-600 space-y-1">
+                    {preview.map((t, i) => <li key={i}>{t}</li>)}
+                    {affected.length > preview.length ? <li>…and {affected.length - preview.length} more</li> : null}
+                  </ul>
+                ) : (
+                  <p className="mt-2 text-xs text-gray-600">The schedule will be re-timed from this insertion point onward.</p>
+                );
+              })()}
+            </div>
+            <div className="mt-4 flex justify-end gap-2">
+              <Dialog.Close asChild>
+                <button
+                  type="button"
+                  className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 text-sm font-medium hover:bg-gray-50"
+                  onClick={() => {
+                    setPendingAddBatchPayload(null);
+                    setTimeConflictInfo({ affectedRowIds: [], snappedTo: null });
+                  }}
+                >
+                  Cancel
+                </button>
+              </Dialog.Close>
+              <button
+                type="button"
+                onClick={() => {
+                  if (!pendingAddBatchPayload) return;
+                  const result = typeof insertBatchesWithReflow === 'function'
+                    ? insertBatchesWithReflow(pendingAddBatchPayload)
+                    : { success: false, error: 'Insert-with-reflow is not available.' };
+                  if (result?.success) {
+                    setTimeConflictOpen(false);
+                    setPendingAddBatchPayload(null);
+                    setTimeConflictInfo({ affectedRowIds: [], snappedTo: null });
+                    closeAddBatchModal();
+                  } else {
+                    setAddBatchValidationError(result?.error || 'Could not add batch.');
+                    setTimeConflictOpen(false);
+                  }
+                }}
+                className="px-4 py-2 rounded-lg bg-primary text-white text-sm font-medium hover:bg-primary-dark"
+              >
+                Proceed & adjust schedule
               </button>
             </div>
           </Dialog.Content>

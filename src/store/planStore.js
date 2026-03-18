@@ -52,9 +52,13 @@ function normalizeRow(r) {
   const excess = Number(r.excess) || 0;
   const samples = r.samples !== undefined ? Number(r.samples) : 2;
   const theorExcess = Number(r.theorExcess) || 0;
-  const theorOutput = r.theorOutputOverride !== undefined && r.theorOutputOverride !== ''
-    ? Number(r.theorOutputOverride)
-    : computeTheoreticalOutput({ soCoExcess, exchangeForLoss, excess, samples });
+  const theorOutputOverride = r.theorOutputOverride;
+  const hasTheorOutputOverride = theorOutputOverride !== undefined && theorOutputOverride !== '';
+  const storedTheorOutput = r.theorOutput !== undefined && r.theorOutput !== '' ? Number(r.theorOutput) : undefined;
+  const hasStoredTheorOutput = storedTheorOutput !== undefined && !Number.isNaN(storedTheorOutput);
+  const theorOutput = hasTheorOutputOverride
+    ? Number(theorOutputOverride)
+    : (hasStoredTheorOutput ? storedTheorOutput : computeTheoreticalOutput({ soCoExcess, exchangeForLoss, excess, samples }));
   return {
     ...r,
     productionLineId: lineId,
@@ -66,7 +70,7 @@ function normalizeRow(r) {
     samples,
     carryOverExcess,
     theorExcess,
-    theorOutputOverride: r.theorOutputOverride,
+    theorOutputOverride,
     theorOutput,
   };
 }
@@ -108,6 +112,8 @@ function buildSnapshot() {
     setRows,
     addBatch,
     addBatchesFromModal,
+    previewInsertBatchesWithReflow,
+    insertBatchesWithReflow,
     reorderRows,
     swapOrderBetweenRows,
     deleteBatch,
@@ -211,8 +217,8 @@ function ordinal(n) {
 }
 
 /**
- * Compute Order Batch (per-product: 1st, 2nd, 3rd batch of that product) and
- * Line Batch (per line per date: 1st, 2nd, 3rd batch on that line that day).
+ * Compute Order Batch (per line per date: 1st, 2nd, 3rd batch on that line that day) and
+ * Line Batch (legacy: same as Order Batch; kept for backward compatibility).
  * @param {Array} rows - Plan rows
  * @returns {{ orderBatch: Record<string, string>, lineBatch: Record<string, string> }}
  */
@@ -221,25 +227,7 @@ export function getOrderBatchAndLineBatch(rows) {
   const lineBatch = {};
   if (!Array.isArray(rows) || rows.length === 0) return { orderBatch, lineBatch };
 
-  // Order Batch: group by product, sort by date then startSponge, assign 1st, 2nd, 3rd
-  const byProduct = {};
-  rows.forEach((r) => {
-    const p = (r.product || '').trim() || '\0';
-    if (!byProduct[p]) byProduct[p] = [];
-    byProduct[p].push(r);
-  });
-  Object.keys(byProduct).forEach((product) => {
-    const list = [...byProduct[product]].sort((a, b) => {
-      const d = (a.date || '').localeCompare(b.date || '');
-      if (d !== 0) return d;
-      return parseTimeToMinutes(a.startSponge) - parseTimeToMinutes(b.startSponge);
-    });
-    list.forEach((r, i) => {
-      orderBatch[r.id] = ordinal(i + 1);
-    });
-  });
-
-  // Line Batch: by start time within (productionLineId, date) — 1st Line Batch = earliest Start Sponge that day; stays with the schedule, not array order
+  // Order Batch: by start time within (productionLineId, date) — 1st = earliest Start Sponge that day on that line.
   const byLineDate = {};
   rows.forEach((r) => {
     const key = `${r.productionLineId || ''}\t${r.date || ''}`;
@@ -251,7 +239,9 @@ export function getOrderBatchAndLineBatch(rows) {
       (a, b) => parseTimeToMinutes(a.startSponge) - parseTimeToMinutes(b.startSponge)
     );
     list.forEach((r, i) => {
-      lineBatch[r.id] = ordinal(i + 1);
+      const v = ordinal(i + 1);
+      orderBatch[r.id] = v;
+      lineBatch[r.id] = v;
     });
   });
 
@@ -277,13 +267,42 @@ export function getLatestBatchEndForLine(lineId) {
   return result;
 }
 
-/**
- * Add one or more batch rows from modal input. Validates: when plan date is today, batch start >= now;
- * batch start must be after latest batch end on same line. Creates ceil(theorOutput/capacity) rows.
- * @param {Object} payload - { productionLineId, date (YYYY-MM-DD), startSponge (HH:MM), product, salesOrder?, soQty, soCoExcess, exchangeForLoss, excess, samples, theorOutputOverride? }
- * @returns {{ success: boolean, error?: string, rowsAdded?: number }}
- */
-export function addBatchesFromModal(payload) {
+function getLatestBatchEndForLineOnDate(lineId, dateStr) {
+  const ds = dateStr && typeof dateStr === 'string' ? dateStr.split('T')[0] : '';
+  if (!ds) return null;
+  const lineRows = state.rows.filter((r) => r.productionLineId === lineId && (r.date || '') === ds);
+  if (lineRows.length === 0) return null;
+  let maxEndMs = 0;
+  let result = null;
+  for (const row of lineRows) {
+    if (!row.endBatch || !row.startSponge) continue;
+    let endMs = new Date(ds + 'T' + row.endBatch).getTime();
+    if (parseTimeToMinutes(row.endBatch) <= parseTimeToMinutes(row.startSponge)) endMs += 24 * 60 * 60 * 1000;
+    if (endMs > maxEndMs) {
+      maxEndMs = endMs;
+      result = { date: ds, endBatch: row.endBatch, endMs };
+    }
+  }
+  return result;
+}
+
+function computeRowStartEndMs(row) {
+  const dateStr = row.date && typeof row.date === 'string' ? row.date.split('T')[0] : '';
+  if (!dateStr || !row.startSponge || !row.endBatch) return null;
+  const startMs = new Date(dateStr + 'T' + row.startSponge).getTime();
+  let endMs = new Date(dateStr + 'T' + row.endBatch).getTime();
+  if (parseTimeToMinutes(row.endBatch) <= parseTimeToMinutes(row.startSponge)) endMs += 24 * 60 * 60 * 1000;
+  return { startMs, endMs };
+}
+
+function addDays(dateStr, days) {
+  const d = new Date(dateStr);
+  if (Number.isNaN(d.getTime())) return dateStr;
+  d.setDate(d.getDate() + days);
+  return toDateString(d);
+}
+
+function buildNewRowsFromModal(payload, createdAtMs) {
   const lineId = payload.productionLineId || getLines()[0]?.id || 'line-loaf';
   const dateStr = payload.date && typeof payload.date === 'string' ? payload.date.split('T')[0] : toDateString(state.planDate);
   const startSponge = payload.startSponge && /^\d{1,2}:\d{2}$/.test(String(payload.startSponge).trim()) ? String(payload.startSponge).trim() : '00:00';
@@ -319,27 +338,11 @@ export function addBatchesFromModal(payload) {
   const batchSize = useTotalQtyForBatches ? yieldPerBatch : capacity;
   let remaining = useTotalQtyForBatches ? soQty : theorOutput;
 
-  const batchStartMs = new Date(dateStr + 'T' + startSponge).getTime();
-  const now = new Date();
-  const planDateStr = toDateString(state.planDate);
-  const isPlanDateToday = planDateStr === toDateString(now);
-  if (isPlanDateToday) {
-    const nowStartOfMinute = Math.floor(now.getTime() / 60000) * 60000;
-    if (batchStartMs < nowStartOfMinute) {
-      return { success: false, error: 'When plan date is today, batch start date and time cannot be in the past.' };
-    }
-  }
-  const latest = getLatestBatchEndForLine(lineId);
-  if (latest && batchStartMs <= latest.endMs) {
-    return { success: false, error: 'Batch start must be after the end of existing batches on this line (e.g. after ' + latest.endBatch + ' on ' + latest.date + ').' };
-  }
-
   const recipes = getRecipesForLine(lineId);
   const productName = recipes.find((r) => r.name === product)?.name || product;
   const newRows = [];
   let currentStart = startSponge;
   let currentDate = dateStr;
-  const createdAtMs = Date.now();
   const createdAtIso = new Date(createdAtMs).toISOString();
 
   const carryOverPayload = Number(payload.carryOverExcess) || 0;
@@ -391,18 +394,205 @@ export function addBatchesFromModal(payload) {
     if (staggerMinutes > 0) {
       currentStart = addMinutesToTime(prevStart, staggerMinutes);
       if (parseTimeToMinutes(currentStart) < parseTimeToMinutes(prevStart) && currentStart !== prevStart) {
-        const d = new Date(currentDate);
-        d.setDate(d.getDate() + 1);
-        currentDate = toDateString(d);
+        currentDate = addDays(currentDate, 1);
       }
     } else {
       currentStart = endBatch;
       if (parseTimeToMinutes(endBatch) <= parseTimeToMinutes(prevStart) && endBatch !== prevStart) {
-        const d = new Date(currentDate);
-        d.setDate(d.getDate() + 1);
-        currentDate = toDateString(d);
+        currentDate = addDays(currentDate, 1);
       }
     }
+  }
+
+  return { success: true, newRows, lineId, dateStr, startSponge };
+}
+
+export function previewInsertBatchesWithReflow(payload) {
+  const lineId = payload.productionLineId || getLines()[0]?.id || 'line-loaf';
+  const dateStr = payload.date && typeof payload.date === 'string' ? payload.date.split('T')[0] : toDateString(state.planDate);
+  const startSponge = payload.startSponge && /^\d{1,2}:\d{2}$/.test(String(payload.startSponge).trim()) ? String(payload.startSponge).trim() : '00:00';
+  const insertStartMs = new Date(dateStr + 'T' + startSponge).getTime();
+  const lineRows = state.rows.filter((r) => r.productionLineId === lineId && (r.date || '') === dateStr);
+  if (lineRows.length === 0) return { hasConflict: false, affectedRowIds: [], snappedTo: null };
+
+  // Snap rule (forward-only):
+  // - Find the nearest existing batch start at/after the typed time. If none, snap to "end of day schedule" (latest end on line).
+  const starts = lineRows
+    .map((r) => ({ row: r, startMs: computeRowStartEndMs(r)?.startMs ?? null }))
+    .filter((x) => x.startMs != null)
+    .sort((a, b) => a.startMs - b.startMs);
+
+  const firstAtOrAfter = starts.find((x) => x.startMs >= insertStartMs) || null;
+  const latest = getLatestBatchEndForLineOnDate(lineId, dateStr);
+
+  let snappedDate = dateStr;
+  let snappedStartSponge = startSponge;
+  let snappedStartMs = insertStartMs;
+
+  if (firstAtOrAfter) {
+    snappedStartMs = firstAtOrAfter.startMs;
+    snappedDate = firstAtOrAfter.row.date;
+    snappedStartSponge = firstAtOrAfter.row.startSponge;
+  } else if (latest && insertStartMs <= latest.endMs) {
+    // If the user typed a time that falls before the overall latest end (conflict),
+    // but there is no later start on this date, snap to the latest end slot.
+    snappedStartMs = latest.endMs;
+    snappedDate = latest.date;
+    snappedStartSponge = latest.endBatch;
+  }
+
+  const affectedRowIds = lineRows
+    .map((r) => ({ r, se: computeRowStartEndMs(r) }))
+    .filter((x) => x.se && x.se.startMs >= snappedStartMs)
+    .sort((a, b) => a.se.startMs - b.se.startMs)
+    .map((x) => x.r.id);
+
+  const didSnap = snappedDate !== dateStr || snappedStartSponge !== startSponge;
+  return {
+    hasConflict: affectedRowIds.length > 0 || didSnap,
+    affectedRowIds,
+    snappedTo: didSnap ? { date: snappedDate, startSponge: snappedStartSponge } : null,
+  };
+}
+
+export function insertBatchesWithReflow(payload) {
+  const preview = previewInsertBatchesWithReflow(payload);
+  const snappedPayload = preview?.snappedTo
+    ? { ...payload, date: preview.snappedTo.date, startSponge: preview.snappedTo.startSponge }
+    : payload;
+
+  const createdAtMs = Date.now();
+  const build = buildNewRowsFromModal(snappedPayload, createdAtMs);
+  if (!build.success) return build;
+
+  const { lineId, dateStr, startSponge, newRows } = build;
+  const batchStartMs = new Date(dateStr + 'T' + startSponge).getTime();
+  const now = new Date();
+  const planDateStr = toDateString(state.planDate);
+  const isPlanDateToday = planDateStr === toDateString(now);
+  if (isPlanDateToday) {
+    const nowStartOfMinute = Math.floor(now.getTime() / 60000) * 60000;
+    if (batchStartMs < nowStartOfMinute) {
+      return { success: false, error: 'When plan date is today, batch start date and time cannot be in the past.' };
+    }
+  }
+
+  const affectedSet = new Set(preview?.affectedRowIds || []);
+  const staggerMinutes = getStaggerMinutesForLine(lineId);
+
+  // Reflow affected rows on this line (push forward) after inserting the new rows group.
+  const lineRows = state.rows.filter((r) => r.productionLineId === lineId && (r.date || '') === dateStr);
+  const affectedRows = lineRows
+    .filter((r) => affectedSet.has(r.id))
+    .map((r) => {
+      const se = computeRowStartEndMs(r);
+      return { row: r, startMs: se?.startMs ?? 0, endMs: se?.endMs ?? 0 };
+    })
+    .sort((a, b) => a.startMs - b.startMs);
+
+  // With "snap to nearest slot", reflow anchor is the inserted group's last row.
+  const insertedGroupLast = newRows[newRows.length - 1] || null;
+  const reflowBase = insertedGroupLast;
+
+  // Compute the starting point for the first affected row.
+  let currentDate = reflowBase ? (reflowBase.date || dateStr) : dateStr;
+  let prevStart = reflowBase ? (reflowBase.startSponge || startSponge) : startSponge;
+  let prevEndBatch = reflowBase ? (reflowBase.endBatch || startSponge) : startSponge;
+
+  const updatedAffectedById = new Map();
+  for (const item of affectedRows) {
+    const original = item.row;
+
+    let nextStart = '';
+    if (staggerMinutes > 0) {
+      nextStart = addMinutesToTime(prevStart, staggerMinutes);
+      if (parseTimeToMinutes(nextStart) < parseTimeToMinutes(prevStart) && nextStart !== prevStart) {
+        currentDate = addDays(currentDate, 1);
+      }
+    } else {
+      nextStart = prevEndBatch;
+      if (parseTimeToMinutes(prevEndBatch) <= parseTimeToMinutes(prevStart) && prevEndBatch !== prevStart) {
+        currentDate = addDays(currentDate, 1);
+      }
+    }
+
+    const moved = normalizeRow({
+      ...original,
+      productionLineId: lineId,
+      date: currentDate,
+      startSponge: nextStart,
+    });
+    const { endDough, endBatch } = recomputeEndTimesForRow(moved);
+    moved.endDough = endDough;
+    moved.endBatch = endBatch;
+
+    updatedAffectedById.set(original.id, moved);
+
+    prevStart = moved.startSponge;
+    prevEndBatch = moved.endBatch;
+  }
+
+  // Build final rows array with minimal disruption:
+  // - Keep all non-line rows as-is
+  // - Keep unaffected line rows as-is (including earlier rows before snapped slot)
+  // - Replace the first affected occurrence with: inserted new rows + updated affected rows, then skip all original affected rows
+  const updatedAffectedOrdered = affectedRows.map((x) => updatedAffectedById.get(x.row.id)).filter(Boolean);
+  const nextAll = [];
+  let inserted = false;
+  let lastLineInsertIdx = -1;
+  for (const r of state.rows) {
+    if (r.productionLineId !== lineId || (r.date || '') !== dateStr) {
+      nextAll.push(r);
+      continue;
+    }
+    lastLineInsertIdx = nextAll.length;
+    if (affectedSet.has(r.id)) {
+      if (!inserted) {
+        nextAll.push(...newRows.map(normalizeRow));
+        nextAll.push(...updatedAffectedOrdered);
+        inserted = true;
+      }
+      continue;
+    }
+    nextAll.push(r);
+  }
+  if (!inserted) {
+    const insertAt = lastLineInsertIdx >= 0 ? lastLineInsertIdx + 1 : nextAll.length;
+    nextAll.splice(insertAt, 0, ...newRows.map(normalizeRow));
+  }
+
+  state = { ...state, rows: nextAll };
+  persistRows(state.rows);
+  pushToApi(state.planId, state.planDate, state.rows);
+  emit();
+  return { success: true, rowsAdded: newRows.length, affectedMoved: updatedAffectedOrdered.length };
+}
+
+/**
+ * Add one or more batch rows from modal input. Validates: when plan date is today, batch start >= now;
+ * batch start must be after latest batch end on same line. Creates ceil(theorOutput/capacity) rows.
+ * @param {Object} payload - { productionLineId, date (YYYY-MM-DD), startSponge (HH:MM), product, salesOrder?, soQty, soCoExcess, exchangeForLoss, excess, samples, theorOutputOverride? }
+ * @returns {{ success: boolean, error?: string, rowsAdded?: number }}
+ */
+export function addBatchesFromModal(payload) {
+  const createdAtMs = Date.now();
+  const build = buildNewRowsFromModal(payload, createdAtMs);
+  if (!build.success) return build;
+  const { lineId, dateStr, startSponge, newRows } = build;
+
+  const batchStartMs = new Date(dateStr + 'T' + startSponge).getTime();
+  const now = new Date();
+  const planDateStr = toDateString(state.planDate);
+  const isPlanDateToday = planDateStr === toDateString(now);
+  if (isPlanDateToday) {
+    const nowStartOfMinute = Math.floor(now.getTime() / 60000) * 60000;
+    if (batchStartMs < nowStartOfMinute) {
+      return { success: false, error: 'When plan date is today, batch start date and time cannot be in the past.' };
+    }
+  }
+  const latest = getLatestBatchEndForLine(lineId);
+  if (latest && batchStartMs <= latest.endMs) {
+    return { success: false, error: 'Batch start must be after the end of existing batches on this line (e.g. after ' + latest.endBatch + ' on ' + latest.date + ').' };
   }
 
   state = { ...state, rows: [...state.rows, ...newRows] };
