@@ -59,7 +59,7 @@ function normalizeRow(r) {
   const theorOutput = hasTheorOutputOverride
     ? Number(theorOutputOverride)
     : (hasStoredTheorOutput ? storedTheorOutput : computeTheoreticalOutput({ soCoExcess, exchangeForLoss, excess, samples }));
-  return {
+  const base = {
     ...r,
     productionLineId: lineId,
     date: r.date && typeof r.date === 'string' ? r.date.split('T')[0] : r.date,
@@ -73,6 +73,18 @@ function normalizeRow(r) {
     theorOutputOverride,
     theorOutput,
   };
+  if (r.isBreak) {
+    const sm = parseTimeToMinutes(r.startSponge);
+    const em = parseTimeToMinutes(r.endBatch);
+    const wallDur = em > sm ? em - sm : null;
+    let bm = Number(r.breakMinutes);
+    if (!Number.isFinite(bm) || bm <= 0) {
+      bm = wallDur != null && wallDur > 0 ? wallDur : 0;
+    }
+    const pt = Number.isFinite(Number(r.procTime)) && Number(r.procTime) > 0 ? Number(r.procTime) : bm;
+    return { ...base, breakMinutes: bm, procTime: pt };
+  }
+  return base;
 }
 
 function getInitialRows() {
@@ -114,11 +126,172 @@ function buildSnapshot() {
     addBatchesFromModal,
     previewInsertBatchesWithReflow,
     insertBatchesWithReflow,
+    insertBatchBreakWithReflow,
     previewSwapOrderBetweenRows,
     reorderRows,
     swapOrderBetweenRows,
     deleteBatch,
   };
+}
+
+function computeEndTimesForRowPreservingType(row) {
+  if (row?.isBreak) {
+    const mins = Number(row.breakMinutes);
+    const safe = Number.isNaN(mins) ? 0 : Math.max(0, mins);
+    const endBatch = safe > 0 ? addMinutesToTime(row.startSponge, safe) : (row.endBatch || row.startSponge);
+    return { endDough: endBatch, endBatch };
+  }
+  return recomputeEndTimesForRow(row);
+}
+
+export function insertBatchBreakWithReflow(payload) {
+  const lineId = payload.productionLineId || getLines()[0]?.id || 'line-loaf';
+  const dateStr = payload.date && typeof payload.date === 'string' ? payload.date.split('T')[0] : toDateString(state.planDate);
+  const startSponge = payload.startSponge && /^\d{1,2}:\d{2}$/.test(String(payload.startSponge).trim()) ? String(payload.startSponge).trim() : '00:00';
+  const breakEnd = payload.breakEnd && /^\d{1,2}:\d{2}$/.test(String(payload.breakEnd).trim()) ? String(payload.breakEnd).trim() : '';
+  if (!breakEnd) return { success: false, error: 'Batch Break End is required.' };
+  const startM = parseTimeToMinutes(startSponge);
+  const endM = parseTimeToMinutes(breakEnd);
+  if (endM <= startM) return { success: false, error: 'Batch Break End must be after Batch Break Start.' };
+  const duration = endM - startM;
+
+  // Snap / conflict against existing schedule on this date (same as batch insert behavior, but without product requirements).
+  const insertStartMs = new Date(dateStr + 'T' + startSponge).getTime();
+  const lineRows = state.rows.filter((r) => r.productionLineId === lineId && (r.date || '') === dateStr);
+  const starts = lineRows
+    .map((r) => ({ row: r, startMs: computeRowStartEndMs(r)?.startMs ?? null }))
+    .filter((x) => x.startMs != null)
+    .sort((a, b) => a.startMs - b.startMs);
+  const firstAtOrAfter = starts.find((x) => x.startMs >= insertStartMs) || null;
+  const latest = getLatestBatchEndForLineOnDate(lineId, dateStr);
+
+  let snappedDate = dateStr;
+  let snappedStart = startSponge;
+  let snappedStartMs = insertStartMs;
+  if (firstAtOrAfter) {
+    snappedStartMs = firstAtOrAfter.startMs;
+    snappedDate = firstAtOrAfter.row.date;
+    snappedStart = firstAtOrAfter.row.startSponge;
+  } else if (latest && insertStartMs <= latest.endMs) {
+    snappedStartMs = latest.endMs;
+    snappedDate = latest.date;
+    snappedStart = latest.endBatch;
+  }
+
+  const createdAtMs = Date.now();
+  const createdAtIso = new Date(createdAtMs).toISOString();
+  const label = payload.description && String(payload.description).trim() ? String(payload.description).trim() : 'Time Blocker';
+  const newBreakRow = normalizeRow({
+    id: String(createdAtMs) + '-break',
+    createdAt: createdAtIso,
+    productionLineId: lineId,
+    date: snappedDate,
+    product: label,
+    isBreak: true,
+    breakMinutes: duration,
+    soQty: 0,
+    soCoExcess: 0,
+    exchangeForLoss: 0,
+    excess: 0,
+    samples: 0,
+    carryOverExcess: 0,
+    theorExcess: 0,
+    theorOutputOverride: '',
+    theorOutput: 0,
+    capacity: 0,
+    procTime: duration,
+    startSponge: snappedStart,
+    endDough: breakEnd,
+    endBatch: breakEnd,
+  });
+  const { endDough, endBatch } = computeEndTimesForRowPreservingType(newBreakRow);
+  newBreakRow.endDough = endDough;
+  newBreakRow.endBatch = endBatch;
+
+  const affectedSet = new Set(
+    lineRows
+      .map((r) => ({ r, se: computeRowStartEndMs(r) }))
+      .filter((x) => x.se && x.se.startMs >= snappedStartMs)
+      .sort((a, b) => a.se.startMs - b.se.startMs)
+      .map((x) => x.r.id)
+  );
+
+  // Reflow affected rows after the break.
+  const staggerMinutes = getStaggerMinutesForLine(lineId);
+  const affectedRows = lineRows
+    .filter((r) => affectedSet.has(r.id))
+    .map((r) => ({ row: r, startMs: computeRowStartEndMs(r)?.startMs ?? 0 }))
+    .sort((a, b) => a.startMs - b.startMs);
+
+  let currentDate = snappedDate;
+  let prevStart = snappedStart;
+  let prevEndBatch = newBreakRow.endBatch;
+
+  const updatedAffectedById = new Map();
+  let firstAffectedAfterBreak = true;
+  for (const item of affectedRows) {
+    const original = item.row;
+    let nextStart = '';
+    if (staggerMinutes > 0) {
+      // First batch after a Time Blocker: start when the line is free (break end), not breakStart + stagger
+      // (breakStart + stagger is still "inside" or aligned to the pipelining grid but ignores buffer duration).
+      if (firstAffectedAfterBreak) {
+        nextStart = prevEndBatch;
+        firstAffectedAfterBreak = false;
+      } else {
+        nextStart = addMinutesToTime(prevStart, staggerMinutes);
+        if (parseTimeToMinutes(nextStart) < parseTimeToMinutes(prevStart) && nextStart !== prevStart) {
+          currentDate = addDays(currentDate, 1);
+        }
+      }
+    } else {
+      nextStart = prevEndBatch;
+      firstAffectedAfterBreak = false;
+      if (parseTimeToMinutes(prevEndBatch) <= parseTimeToMinutes(prevStart) && prevEndBatch !== prevStart) {
+        currentDate = addDays(currentDate, 1);
+      }
+    }
+
+    const moved = normalizeRow({ ...original, productionLineId: lineId, date: currentDate, startSponge: nextStart });
+    const ends = computeEndTimesForRowPreservingType(moved);
+    moved.endDough = ends.endDough;
+    moved.endBatch = ends.endBatch;
+    updatedAffectedById.set(original.id, moved);
+    prevStart = moved.startSponge;
+    prevEndBatch = moved.endBatch;
+  }
+
+  const updatedAffectedOrdered = affectedRows.map((x) => updatedAffectedById.get(x.row.id)).filter(Boolean);
+
+  const nextAll = [];
+  let inserted = false;
+  let lastLineInsertIdx = -1;
+  for (const r of state.rows) {
+    if (r.productionLineId !== lineId || (r.date || '') !== dateStr) {
+      nextAll.push(r);
+      continue;
+    }
+    lastLineInsertIdx = nextAll.length;
+    if (affectedSet.has(r.id)) {
+      if (!inserted) {
+        nextAll.push(newBreakRow);
+        nextAll.push(...updatedAffectedOrdered);
+        inserted = true;
+      }
+      continue;
+    }
+    nextAll.push(r);
+  }
+  if (!inserted) {
+    const insertAt = lastLineInsertIdx >= 0 ? lastLineInsertIdx + 1 : nextAll.length;
+    nextAll.splice(insertAt, 0, newBreakRow);
+  }
+
+  state = { ...state, rows: nextAll };
+  persistRows(state.rows);
+  pushToApi(state.planId, state.planDate, state.rows);
+  emit();
+  return { success: true, rowsAdded: 1, affectedMoved: updatedAffectedOrdered.length };
 }
 
 export function previewSwapOrderBetweenRows(rowIdA, rowIdB) {
@@ -192,9 +365,17 @@ export function previewSwapOrderBetweenRows(rowIdA, rowIdB) {
       prevStart = startSponge;
       prevEndBatch = startSponge;
     } else if (staggerMinutes > 0) {
-      startSponge = addMinutesToTime(prevStart, staggerMinutes);
-      if (parseTimeToMinutes(startSponge) < parseTimeToMinutes(prevStart) && startSponge !== prevStart) {
-        currentDate = addDays(currentDate, 1);
+      if (i > startPos) {
+        const prevRefId = ids[i - 1];
+        const prevMoved = updatedById.get(prevRefId);
+        if (prevMoved?.isBreak && prevMoved.endBatch) {
+          startSponge = prevMoved.endBatch;
+        } else {
+          startSponge = addMinutesToTime(prevStart, staggerMinutes);
+          if (parseTimeToMinutes(startSponge) < parseTimeToMinutes(prevStart) && startSponge !== prevStart) {
+            currentDate = addDays(currentDate, 1);
+          }
+        }
       }
     } else {
       startSponge = prevEndBatch;
@@ -209,9 +390,9 @@ export function previewSwapOrderBetweenRows(rowIdA, rowIdB) {
       date: currentDate,
       startSponge,
     });
-    const { endDough, endBatch } = recomputeEndTimesForRow(moved);
-    moved.endDough = endDough;
-    moved.endBatch = endBatch;
+    const ends = computeEndTimesForRowPreservingType(moved);
+    moved.endDough = ends.endDough;
+    moved.endBatch = ends.endBatch;
     updatedById.set(id, moved);
     prevStart = moved.startSponge;
     prevEndBatch = moved.endBatch;
@@ -313,6 +494,27 @@ export function hydrateFromApi(data) {
     state = { ...state, hydrated: true };
   }
   emit();
+}
+
+/**
+ * Hydrate rows from localStorage cache (offline fallback).
+ * This is used when Supabase is configured but temporarily unreachable.
+ */
+export function hydrateFromLocalStorage() {
+  const rows = getInitialRows();
+  state = {
+    ...state,
+    rows,
+    hydrated: true,
+  };
+  emit();
+}
+
+/** Clear local cached rows (authoritative Supabase sync). */
+export function clearLocalRowsCache() {
+  try {
+    localStorage.removeItem(PLAN_ROWS_STORAGE_KEY);
+  } catch (_) {}
 }
 
 export function setPlanDate(date) {
@@ -877,9 +1079,18 @@ export function swapOrderBetweenRows(rowIdA, rowIdB) {
       prevStart = startSponge;
       prevEndBatch = startSponge;
     } else if (staggerMinutes > 0) {
-      startSponge = addMinutesToTime(prevStart, staggerMinutes);
-      if (parseTimeToMinutes(startSponge) < parseTimeToMinutes(prevStart) && startSponge !== prevStart) {
-        currentDate = addDays(currentDate, 1);
+      if (i > startPos) {
+        const prevRefId = ids[i - 1];
+        const prevMoved = updatedById.get(prevRefId);
+        if (prevMoved?.isBreak && prevMoved.endBatch) {
+          // Same as insertBatchBreakWithReflow: first row after a break starts at break end, not breakStart + stagger.
+          startSponge = prevMoved.endBatch;
+        } else {
+          startSponge = addMinutesToTime(prevStart, staggerMinutes);
+          if (parseTimeToMinutes(startSponge) < parseTimeToMinutes(prevStart) && startSponge !== prevStart) {
+            currentDate = addDays(currentDate, 1);
+          }
+        }
       }
     } else {
       startSponge = prevEndBatch;
@@ -894,9 +1105,9 @@ export function swapOrderBetweenRows(rowIdA, rowIdB) {
       date: currentDate,
       startSponge,
     });
-    const { endDough, endBatch } = recomputeEndTimesForRow(moved);
-    moved.endDough = endDough;
-    moved.endBatch = endBatch;
+    const ends = computeEndTimesForRowPreservingType(moved);
+    moved.endDough = ends.endDough;
+    moved.endBatch = ends.endBatch;
 
     updatedById.set(id, moved);
     prevStart = moved.startSponge;

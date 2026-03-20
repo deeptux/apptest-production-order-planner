@@ -8,6 +8,8 @@ import { useSnackbar } from './SnackbarContext';
 import {
   initPlanStore,
   hydrateFromApi,
+  hydrateFromLocalStorage,
+  clearLocalRowsCache,
   setPlanFromRemote,
   shouldSkipNextRealtime,
   subscribe,
@@ -33,10 +35,34 @@ function PlanSync() {
       hydrateFromApi(null);
       return;
     }
-    getPlan().then((data) => {
-      hydrateFromApi(data);
-    });
+    getPlan()
+      .then((data) => {
+        // Authoritative Supabase: discard local cache then hydrate from Supabase.
+        clearLocalRowsCache();
+        hydrateFromApi(data);
+      })
+      .catch(() => {
+        // Offline/unreachable Supabase: use local cache so the app still works.
+        hydrateFromLocalStorage();
+        if (typeof showSnackbar === 'function') showSnackbar('Offline mode (local cache)');
+      });
   }, []);
+
+  // When the browser comes back online, re-hydrate from Supabase (authoritative).
+  useEffect(() => {
+    if (!isSupabaseConfigured()) return undefined;
+    const onOnline = () => {
+      getPlan()
+        .then((data) => {
+          clearLocalRowsCache();
+          hydrateFromApi(data);
+          if (typeof showSnackbar === 'function') showSnackbar('Re-synced from Supabase');
+        })
+        .catch(() => {});
+    };
+    window.addEventListener('online', onOnline);
+    return () => window.removeEventListener('online', onOnline);
+  }, [showSnackbar]);
 
   // Hydrate recipes and production lines from Supabase config when available.
   useEffect(() => {
