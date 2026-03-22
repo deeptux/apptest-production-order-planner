@@ -28,10 +28,14 @@ function mergeServerAndLocal(serverRows, localRows, lineId, processId) {
       });
     }
   }
+  // Newest first (requested_at desc), then most recently decided for ties
   return [...byId.values()].sort((a, b) => {
     const ta = new Date(a.requested_at || a.created_at || 0).getTime();
     const tb = new Date(b.requested_at || b.created_at || 0).getTime();
-    return tb - ta;
+    if (tb !== ta) return tb - ta;
+    const da = new Date(a.decided_at || 0).getTime();
+    const db = new Date(b.decided_at || 0).getTime();
+    return db - da;
   });
 }
 
@@ -56,15 +60,20 @@ export function useSupervisorMyRequests({ lineId, processId }) {
     refresh();
   }, [refresh, tick]);
 
+  // Always listen for local queue writes (same tab). When Supabase is on we previously skipped this,
+  // so removeLocalSupervisorRequest() did not bump `tick` → `localOnly` stayed stale until full reload.
   useEffect(() => {
+    const unsubLocal = subscribeSupervisorLocalQueue(refreshLocalTick);
     if (!isSupabaseConfigured()) {
-      const unsub = subscribeSupervisorLocalQueue(refreshLocalTick);
-      return unsub;
+      return unsubLocal;
     }
-    const unsub = subscribeOverrides(() => {
+    const unsubRt = subscribeOverrides(() => {
       refresh();
     });
-    return unsub;
+    return () => {
+      unsubLocal();
+      unsubRt();
+    };
   }, [refresh, refreshLocalTick]);
 
   useEffect(() => {

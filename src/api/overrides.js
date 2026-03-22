@@ -148,14 +148,30 @@ export async function rejectOverride(overrideId, decided_by) {
   return { ok: true };
 }
 
-/** Supervisor withdraws their own pending row, or admin removes it. Requires DELETE RLS (see migration 003). */
+/**
+ * Supervisor withdraws their own row, or clears it from the UI. Requires DELETE RLS (migration 003).
+ * Uses `.select()` so we detect 0-row deletes (PostgREST returns no error if nothing matched).
+ */
 export async function deleteOverride(overrideId) {
   const t = overridesTable();
-  if (!t || !overrideId) return { ok: false };
-  const { error } = await t.delete().eq('id', overrideId);
+  if (!t || overrideId == null || String(overrideId).trim() === '') {
+    return { ok: false, error: { message: 'Missing Supabase client or request id.' } };
+  }
+  const id = String(overrideId).trim();
+  const { data, error } = await t.delete().eq('id', id).select('id');
   if (error) {
     console.error('deleteOverride error', error);
-    return { ok: false };
+    return { ok: false, error };
+  }
+  if (!data?.length) {
+    return {
+      ok: false,
+      noRows: true,
+      error: {
+        message:
+          'Delete affected 0 rows. Either the row id does not match the database, or DELETE is blocked by RLS. Run supabase/migrations/003_override_requests_delete_policy.sql in the SQL Editor.',
+      },
+    };
   }
   return { ok: true };
 }

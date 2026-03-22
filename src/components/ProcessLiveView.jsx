@@ -226,10 +226,6 @@ export default function ProcessLiveView() {
               Supervisor live · {title}
             </h1>
           </div>
-          <p className="text-xs sm:text-sm text-white/85 max-w-xl sm:text-right">
-            This page is fixed to one line and one process. Admins open the right link from Dashboard (Production Line
-            Profile + Live View).
-          </p>
         </div>
       </header>
 

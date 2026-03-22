@@ -4,7 +4,10 @@ import { deleteOverride } from '../api/overrides';
 import { notifyAdminPendingOverridesRefresh } from '../context/OverrideRequestsContext';
 import { useSupervisorMyRequests } from '../hooks/useSupervisorMyRequests';
 import { removeLocalSupervisorRequest } from '../utils/supervisorLocalQueue';
-import { formatSupervisorRequestSummary, formatSupervisorRequestWhen } from '../constants/supervisorRequests';
+import {
+  formatSupervisorRequestSummary,
+  formatSupervisorRequestWhenCompact,
+} from '../constants/supervisorRequests';
 
 function statusBadge(status) {
   const s = (status || '').toLowerCase();
@@ -27,7 +30,7 @@ function statusLabel(status) {
   return s ? s.charAt(0).toUpperCase() + s.slice(1) : '—';
 }
 
-function canWithdrawRequest(row) {
+function isPendingRequest(row) {
   const s = String(row.status ?? '').toLowerCase().trim();
   return s === 'pending' || s === 'pending_local';
 }
@@ -42,12 +45,15 @@ export default function SupervisorRequestsPanel({ lineId, processId }) {
 
   const toggle = useCallback(() => setExpanded((e) => !e), []);
 
-  const withdrawRequest = useCallback(
+  const removeRequestFromPanel = useCallback(
     async (row) => {
-      if (!row?.id || !canWithdrawRequest(row)) return;
+      if (!row?.id) return;
+      const pending = isPendingRequest(row);
       if (
         !window.confirm(
-          'Remove this request? It will disappear from your list and from the Dashboard notification bar on this browser.',
+          pending
+            ? 'Withdraw this request? It will disappear from your list and from the planner notification bar on this browser.'
+            : 'Remove this request from your list? It will be deleted from this device’s queue or from the database when allowed.',
         )
       ) {
         return;
@@ -62,11 +68,16 @@ export default function SupervisorRequestsPanel({ lineId, processId }) {
         } else {
           const res = await deleteOverride(row.id);
           if (res.ok) {
+            removeLocalSupervisorRequest(String(row.id));
             notifyAdminPendingOverridesRefresh();
             await refresh();
           } else {
+            await refresh();
+            const detail = res.error?.message || res.error?.hint || 'Could not delete this request.';
             window.alert(
-              'Could not delete this request from the database. Run migration 003_override_requests_delete_policy.sql in Supabase (see supabase/README.md), or ask an admin to remove it.',
+              res.noRows
+                ? `${detail}\n\nIf you never applied migration 003, open Supabase → SQL Editor and run the contents of supabase/migrations/003_override_requests_delete_policy.sql`
+                : detail,
             );
           }
         }
@@ -83,7 +94,8 @@ export default function SupervisorRequestsPanel({ lineId, processId }) {
         <button
           type="button"
           onClick={() => setExpanded(true)}
-          className="pointer-events-auto fixed bottom-4 right-4 z-[91] flex items-center gap-2 rounded-full border-2 border-primary bg-surface px-4 py-2.5 text-sm font-semibold text-primary shadow-lg sm:hidden"
+          className="pointer-events-auto fixed z-[91] flex max-w-[calc(100vw-1.5rem)] items-center gap-2 rounded-full border-2 border-primary bg-surface px-4 py-2.5 text-sm font-semibold text-primary shadow-lg sm:hidden"
+          style={{ bottom: 'max(1rem, env(safe-area-inset-bottom, 0px))', right: 'max(1rem, env(safe-area-inset-right, 0px))' }}
         >
           <ClipboardList className="h-4 w-4 shrink-0" aria-hidden />
           My requests
@@ -95,12 +107,14 @@ export default function SupervisorRequestsPanel({ lineId, processId }) {
         </button>
       )}
     <div
-      className={`fixed top-0 right-0 z-[90] flex h-full max-h-screen pointer-events-none ${
-        expanded ? 'w-[min(100vw-1rem,19rem)] sm:w-[22rem]' : 'w-0 sm:w-9'
+      className={`fixed top-0 right-0 z-[90] flex h-[100dvh] max-h-[100dvh] pointer-events-none ${
+        expanded
+          ? 'w-[min(22rem,calc(100vw-max(0.5rem,env(safe-area-inset-right,0px))))]'
+          : 'w-0 sm:w-9'
       }`}
       aria-hidden={false}
     >
-      <div className="pointer-events-auto flex h-full ml-auto border-l border-gray-300/80 bg-surface shadow-[0_0_24px_rgba(0,0,0,0.06)]">
+      <div className="pointer-events-auto flex h-full max-h-[100dvh] min-h-0 ml-auto w-full border-l border-gray-300/80 bg-surface shadow-[0_0_24px_rgba(0,0,0,0.06)]">
         <button
           type="button"
           onClick={toggle}
@@ -124,7 +138,7 @@ export default function SupervisorRequestsPanel({ lineId, processId }) {
         {expanded && (
           <aside
             id="supervisor-requests-panel"
-            className="flex w-[min(calc(100vw-2.25rem),19rem)] sm:w-[20rem] flex-col h-full min-h-0 bg-surface"
+            className="flex h-full max-h-[100dvh] min-h-0 w-full min-w-0 flex-col bg-surface"
           >
             <div className="shrink-0 border-b border-gray-300/80 bg-surface-card-warm px-3 py-2.5">
               <div className="flex items-center gap-2">
@@ -144,7 +158,7 @@ export default function SupervisorRequestsPanel({ lineId, processId }) {
                 Refresh list
               </button>
             </div>
-            <div className="flex-1 min-h-0 overflow-y-auto bg-surface px-2 py-2">
+            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain bg-surface px-2 py-2 [scrollbar-gutter:stable]">
               {items.length === 0 ? (
                 <p className="text-sm text-muted px-2 py-6 text-center">
                   No requests yet. Use <strong className="text-gray-700">General request</strong> or row{' '}
@@ -157,33 +171,34 @@ export default function SupervisorRequestsPanel({ lineId, processId }) {
                     return (
                       <li
                         key={row.id}
-                        className="rounded-lg border border-gray-200 bg-surface-card p-2.5 shadow-sm"
+                        className="rounded-lg border border-gray-200 bg-surface-card p-2.5 shadow-sm min-w-0"
                       >
-                        <div className="flex items-start justify-between gap-2 mb-1">
+                        <div className="mb-1 flex min-w-0 items-start justify-between gap-2">
                           <span
-                            className={`text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded border ${statusBadge(row.status)}`}
+                            className={`shrink-0 text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded border ${statusBadge(row.status)}`}
                           >
                             {statusLabel(row.status)}
                           </span>
-                          <div className="flex items-center gap-1 shrink-0">
-                            <span className="text-[10px] text-muted whitespace-nowrap">
-                              {formatSupervisorRequestWhen(row)}
+                          <div className="flex min-w-0 flex-1 items-start justify-end gap-1">
+                            <span className="text-right text-[10px] leading-snug text-muted break-words">
+                              <span className="font-semibold uppercase tracking-wide text-gray-400">
+                                Submitted:{' '}
+                              </span>
+                              {formatSupervisorRequestWhenCompact(row) || '—'}
                             </span>
-                            {canWithdrawRequest(row) && (
-                              <button
-                                type="button"
-                                onClick={() => withdrawRequest(row)}
-                                disabled={withdrawingId === row.id}
-                                className="rounded-md p-1 text-gray-500 hover:bg-red-50 hover:text-red-700 disabled:opacity-50"
-                                title="Remove request"
-                                aria-label="Remove request"
-                              >
-                                <Trash2 className="h-3.5 w-3.5" />
-                              </button>
-                            )}
+                            <button
+                              type="button"
+                              onClick={() => removeRequestFromPanel(row)}
+                              disabled={withdrawingId === row.id}
+                              className="shrink-0 rounded-md p-1 text-gray-500 hover:bg-red-50 hover:text-red-700 disabled:opacity-50"
+                              title={isPendingRequest(row) ? 'Withdraw request' : 'Remove from list'}
+                              aria-label={isPendingRequest(row) ? 'Withdraw request' : 'Remove from list'}
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
                           </div>
                         </div>
-                        <p className="text-sm font-medium text-gray-900 leading-snug">
+                        <p className="text-sm font-medium leading-snug text-gray-900 break-words">
                           {formatSupervisorRequestSummary(row)}
                         </p>
                         {p.note && (
