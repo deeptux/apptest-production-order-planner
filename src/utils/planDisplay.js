@@ -185,6 +185,17 @@ export function batchScheduleAnchorMs(row) {
   return Number.isNaN(ms) ? null : ms;
 }
 
+/** Same instant as production status badges (+08 Asia/Singapore). Use for live process windows so steps align with In Progress. */
+export function batchScheduleAnchorMsSingapore(row) {
+  const dateStr = row?.date && typeof row.date === 'string' ? row.date.split('T')[0] : '';
+  const timeStr = row?.startSponge;
+  if (!dateStr || !timeStr || typeof timeStr !== 'string') return null;
+  const normalized = timeStr.includes(':') ? timeStr : `${timeStr.slice(0, 2)}:${timeStr.slice(2)}`;
+  const iso = `${dateStr}T${normalized}:00+08:00`;
+  const ms = new Date(iso).getTime();
+  return Number.isNaN(ms) ? null : ms;
+}
+
 export function formatInstantMsWithDayContext(ms) {
   if (ms == null || Number.isNaN(Number(ms))) return '—';
   const d = new Date(Number(ms));

@@ -34,17 +34,31 @@ function PlanSync() {
     }
     getPlan()
       .then((data) => {
-        // Authoritative Supabase: discard local cache then hydrate from Supabase.
+        // Authoritative DB: drop local row cache, then apply server rows only.
         clearLocalRowsCache();
         hydrateFromApi(data);
       })
       .catch(() => {
-        hydrateFromLocalStorage(); // couldn't reach supabase — last local copy
-        if (typeof showSnackbar === 'function') showSnackbar('Offline mode (local cache)');
+        hydrateFromLocalStorage();
+        if (typeof showSnackbar === 'function') {
+          showSnackbar('Could not load plan from database — using local cache');
+        }
       });
   }, []);
 
-  // When the browser comes back online, re-hydrate from Supabase (authoritative).
+  // Offline: keep editing; rows stay in memory + localStorage via normal persist.
+  useEffect(() => {
+    if (!isSupabaseConfigured()) return undefined;
+    const onOffline = () => {
+      if (typeof showSnackbar === 'function') {
+        showSnackbar('Offline — changes stay on this device until you reconnect');
+      }
+    };
+    window.addEventListener('offline', onOffline);
+    return () => window.removeEventListener('offline', onOffline);
+  }, [showSnackbar]);
+
+  // Back online: clear local plan cache and force re-download (database is source of truth).
   useEffect(() => {
     if (!isSupabaseConfigured()) return undefined;
     const onOnline = () => {
@@ -52,9 +66,14 @@ function PlanSync() {
         .then((data) => {
           clearLocalRowsCache();
           hydrateFromApi(data);
-          if (typeof showSnackbar === 'function') showSnackbar('Re-synced from Supabase');
+          if (typeof showSnackbar === 'function') showSnackbar('Re-synced from database');
         })
-        .catch(() => {});
+        .catch(() => {
+          hydrateFromLocalStorage();
+          if (typeof showSnackbar === 'function') {
+            showSnackbar('Still could not reach database — using local cache');
+          }
+        });
     };
     window.addEventListener('online', onOnline);
     return () => window.removeEventListener('online', onOnline);

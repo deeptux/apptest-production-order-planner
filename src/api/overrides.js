@@ -2,6 +2,15 @@ import { supabase, SUPABASE_SCHEMA } from '../lib/supabase';
 
 const VALID_STATIONS = ['mixing', 'makeup-dividing', 'makeup-panning', 'baking', 'packaging'];
 
+/** Legacy station ids accepted by DB `override_requests.station_id`. Exported for supervisor Live View routing. */
+export const OVERRIDE_STATION_IDS = [...VALID_STATIONS];
+
+/** Map any process id to a valid DB station (custom line processes use `mixing` as the shared bucket + payload disambiguation). */
+export function resolveOverrideStationId(processId) {
+  if (processId && VALID_STATIONS.includes(processId)) return processId;
+  return 'mixing';
+}
+
 function overridesTable() {
   return supabase.schema(SUPABASE_SCHEMA).from('override_requests');
 }

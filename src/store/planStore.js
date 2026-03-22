@@ -6,6 +6,49 @@ import { getCapacityForProductFromLine, getYieldForProductFromLine, getLines, ge
 import { recomputeEndTimesForRow, parseTimeToMinutes, addMinutesToTime } from '../utils/stageDurations';
 
 const PLAN_ROWS_STORAGE_KEY = 'loaf-plan-rows';
+/** Persisted: last plan sync source + stale flag (survives refresh). */
+const PLAN_SYNC_META_KEY = 'loaf-plan-sync-meta';
+
+export const PLAN_SYNC_SOURCE = {
+  REMOTE: 'remote',
+  LOCAL_FALLBACK: 'local_fallback',
+  LOCAL_ONLY: 'local_only',
+  PENDING: 'pending',
+};
+
+function readPlanSyncMeta() {
+  try {
+    const raw = localStorage.getItem(PLAN_SYNC_META_KEY);
+    if (!raw) return null;
+    const m = JSON.parse(raw);
+    return m && typeof m === 'object' ? m : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function writePlanSyncMeta(meta) {
+  try {
+    localStorage.setItem(
+      PLAN_SYNC_META_KEY,
+      JSON.stringify({ ...meta, at: meta.at ?? Date.now() })
+    );
+  } catch (_) {}
+}
+
+function loadInitialPlanSyncState() {
+  if (!isSupabaseConfigured()) {
+    return { planSyncSource: PLAN_SYNC_SOURCE.LOCAL_ONLY, planCacheStale: false };
+  }
+  const meta = readPlanSyncMeta();
+  if (meta?.source === PLAN_SYNC_SOURCE.LOCAL_FALLBACK && meta?.stale) {
+    return { planSyncSource: PLAN_SYNC_SOURCE.LOCAL_FALLBACK, planCacheStale: true };
+  }
+  if (meta?.source === PLAN_SYNC_SOURCE.REMOTE) {
+    return { planSyncSource: PLAN_SYNC_SOURCE.REMOTE, planCacheStale: false };
+  }
+  return { planSyncSource: PLAN_SYNC_SOURCE.PENDING, planCacheStale: false };
+}
 
 function parsePlanDate(v) {
   if (!v) return null;
@@ -129,12 +172,15 @@ function getInitialRows() {
   return [];
 }
 
+const _initSync = loadInitialPlanSyncState();
+
 let state = {
   planId: null,
   planDate: getInitialPlanDate(),
   rows: getInitialRows(),
   hydrated: !isSupabaseConfigured(),
-  isBackendConnected: isSupabaseConfigured(),
+  planSyncSource: _initSync.planSyncSource,
+  planCacheStale: _initSync.planCacheStale,
 };
 
 let getSkipRef = () => ({ current: false });
@@ -145,12 +191,16 @@ const listeners = new Set();
 let cachedSnapshot = null;
 
 function buildSnapshot() {
+  const backendUp =
+    isSupabaseConfigured() && state.planSyncSource !== PLAN_SYNC_SOURCE.LOCAL_FALLBACK;
   return {
     planId: state.planId,
     planDate: state.planDate,
     rows: state.rows,
     hydrated: state.hydrated,
-    isBackendConnected: state.isBackendConnected,
+    isBackendConnected: backendUp,
+    planSyncSource: state.planSyncSource,
+    planCacheStale: state.planCacheStale,
     setPlanDate,
     setRows,
     addBatch,
@@ -504,7 +554,10 @@ export function setPlanFromRemote(data) {
     planId: data.id ?? state.planId,
     planDate: pd ?? state.planDate,
     rows,
+    planSyncSource: PLAN_SYNC_SOURCE.REMOTE,
+    planCacheStale: false,
   };
+  writePlanSyncMeta({ source: PLAN_SYNC_SOURCE.REMOTE, stale: false });
   persistRows(state.rows);
   emit();
 }
@@ -519,26 +572,43 @@ export function hydrateFromApi(data) {
       planDate: new Date(),
       rows,
       hydrated: true,
+      planSyncSource: PLAN_SYNC_SOURCE.REMOTE,
+      planCacheStale: false,
     };
+    writePlanSyncMeta({ source: PLAN_SYNC_SOURCE.REMOTE, stale: false });
     persistRows(state.rows);
   } else {
-    state = { ...state, hydrated: true };
+    state = {
+      ...state,
+      hydrated: true,
+      planSyncSource: PLAN_SYNC_SOURCE.LOCAL_ONLY,
+      planCacheStale: false,
+    };
+    writePlanSyncMeta({ source: PLAN_SYNC_SOURCE.LOCAL_ONLY, stale: false });
   }
   emit();
 }
 
-// Supabase configured but fetch failed? fall back to whatever was in localStorage
+// Supabase configured but fetch failed / offline: use localStorage as cache (may be stale vs DB).
 export function hydrateFromLocalStorage() {
   const rows = getInitialRows();
+  const remote = isSupabaseConfigured();
   state = {
     ...state,
     rows,
     hydrated: true,
+    planSyncSource: remote ? PLAN_SYNC_SOURCE.LOCAL_FALLBACK : PLAN_SYNC_SOURCE.LOCAL_ONLY,
+    planCacheStale: remote,
   };
+  if (remote) {
+    writePlanSyncMeta({ source: PLAN_SYNC_SOURCE.LOCAL_FALLBACK, stale: true });
+  } else {
+    writePlanSyncMeta({ source: PLAN_SYNC_SOURCE.LOCAL_ONLY, stale: false });
+  }
   emit();
 }
 
-// after a good server sync, wipe stale local copy
+// Before authoritative re-fetch from DB: drop cached rows so we never merge stale + remote.
 export function clearLocalRowsCache() {
   try {
     localStorage.removeItem(PLAN_ROWS_STORAGE_KEY);

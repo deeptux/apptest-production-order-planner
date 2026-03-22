@@ -4,6 +4,7 @@ import { PlanProvider } from './context/PlanContext';
 import PlannerLayout from './components/PlannerLayout';
 import LiveStationPicker from './components/LiveStationPicker';
 import LiveStationView from './components/LiveStationView';
+import ProcessLiveView from './components/ProcessLiveView';
 
 export default function App() {
   return (
@@ -17,6 +18,7 @@ export default function App() {
         <Route path="/recipes" element={<PlannerLayout />} />
         <Route path="/settings" element={<PlannerLayout />} />
         <Route path="/help" element={<PlannerLayout />} />
+        <Route path="/live/line/:lineId/process/:processId" element={<ProcessLiveView />} />
         <Route path="/live" element={<LiveStationPicker />} />
         <Route path="/live/:stationId" element={<LiveStationView />} />
       </Routes>

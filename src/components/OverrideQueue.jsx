@@ -77,6 +77,9 @@ export default function OverrideQueue() {
               <span className="text-xs text-muted ml-2">
                 {req.requested_at ? new Date(req.requested_at).toLocaleString() : ''}
               </span>
+              {req.requested_by && (
+                <div className="text-xs text-gray-600 mt-0.5 w-full">From: {req.requested_by}</div>
+              )}
               {req.payload && Object.keys(req.payload).length > 0 && (
                 <pre className="text-xs text-muted mt-1 whitespace-pre-wrap">
                   {JSON.stringify(req.payload)}

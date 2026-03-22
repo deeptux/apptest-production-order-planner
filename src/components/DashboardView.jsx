@@ -116,7 +116,11 @@ export default function DashboardView() {
                   addButtonLabel="See All Schedules"
                   onExport={() => openDemoModal(DEMO_APP_NOTICE_BODY)}
                   onExportPdf={() => openDemoModal(DEMO_APP_NOTICE_BODY)}
-                  onLiveView={() => window.open('/live', '_blank')}
+                  onLiveView={() =>
+                    navigate(
+                      `/live/line/${encodeURIComponent(selectedLineId)}/process/${encodeURIComponent(sec.id)}`,
+                    )
+                  }
                   maxRows={4}
                 />
               </Tabs.Content>

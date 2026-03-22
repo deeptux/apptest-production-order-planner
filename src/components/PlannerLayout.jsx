@@ -1,5 +1,7 @@
 import { useState, useCallback } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
+import { usePlan } from '../context/PlanContext';
+import { PLAN_SYNC_SOURCE } from '../store/planStore';
 import Topbar from './Topbar';
 import Sidebar from './Sidebar';
 import SidebarDrawer from './SidebarDrawer';
@@ -13,9 +15,20 @@ const PAGES = { dashboard: 'dashboard', production: 'production', recipes: 'reci
 export default function PlannerLayout() {
   const location = useLocation();
   const navigate = useNavigate();
+  const { planSyncSource, planCacheStale } = usePlan();
   const page = location.pathname.replace(/^\//, '') || PAGES.dashboard;
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  const syncBanner =
+    planSyncSource === PLAN_SYNC_SOURCE.LOCAL_ONLY
+      ? { tone: 'info', text: 'Local-only mode — not connected to a database (safe for dev).' }
+      : planCacheStale
+        ? {
+            tone: 'warn',
+            text: 'Showing cached plan — database unavailable; will replace with server data when sync succeeds.',
+          }
+        : null;
 
   const onNavigate = useCallback((id) => {
     navigate(`/${id}`);
@@ -36,6 +49,18 @@ export default function PlannerLayout() {
 
   return (
     <div className="min-h-screen flex flex-col bg-surface">
+      {syncBanner && (
+        <div
+          role="status"
+          className={
+            syncBanner.tone === 'warn'
+              ? 'shrink-0 px-3 py-2 text-sm text-amber-950 bg-amber-100 border-b border-amber-200/80 text-center'
+              : 'shrink-0 px-3 py-2 text-sm text-sky-950 bg-sky-100 border-b border-sky-200/80 text-center'
+          }
+        >
+          {syncBanner.text}
+        </div>
+      )}
       <Topbar onMenuClick={() => setSidebarOpen((o) => !o)} />
       <SidebarDrawer
         open={sidebarOpen}
