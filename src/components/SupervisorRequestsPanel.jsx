@@ -1,6 +1,9 @@
 import { useState, useCallback } from 'react';
-import { ChevronLeft, ChevronRight, ClipboardList } from 'lucide-react';
+import { ChevronLeft, ChevronRight, ClipboardList, Trash2 } from 'lucide-react';
+import { deleteOverride } from '../api/overrides';
+import { notifyAdminPendingOverridesRefresh } from '../context/OverrideRequestsContext';
 import { useSupervisorMyRequests } from '../hooks/useSupervisorMyRequests';
+import { removeLocalSupervisorRequest } from '../utils/supervisorLocalQueue';
 import { formatSupervisorRequestSummary, formatSupervisorRequestWhen } from '../constants/supervisorRequests';
 
 function statusBadge(status) {
@@ -24,14 +27,55 @@ function statusLabel(status) {
   return s ? s.charAt(0).toUpperCase() + s.slice(1) : '—';
 }
 
+function canWithdrawRequest(row) {
+  const s = String(row.status ?? '').toLowerCase().trim();
+  return s === 'pending' || s === 'pending_local';
+}
+
 /**
  * Collapsible right rail: this supervisor’s requests for the current line/process URL.
  */
 export default function SupervisorRequestsPanel({ lineId, processId }) {
   const [expanded, setExpanded] = useState(true);
+  const [withdrawingId, setWithdrawingId] = useState(null);
   const { items, refresh } = useSupervisorMyRequests({ lineId, processId });
 
   const toggle = useCallback(() => setExpanded((e) => !e), []);
+
+  const withdrawRequest = useCallback(
+    async (row) => {
+      if (!row?.id || !canWithdrawRequest(row)) return;
+      if (
+        !window.confirm(
+          'Remove this request? It will disappear from your list and from the Dashboard notification bar on this browser.',
+        )
+      ) {
+        return;
+      }
+      setWithdrawingId(row.id);
+      const isLocal = row._source === 'local' || String(row.id).startsWith('local-');
+      try {
+        if (isLocal) {
+          removeLocalSupervisorRequest(row.id);
+          notifyAdminPendingOverridesRefresh();
+          await refresh();
+        } else {
+          const res = await deleteOverride(row.id);
+          if (res.ok) {
+            notifyAdminPendingOverridesRefresh();
+            await refresh();
+          } else {
+            window.alert(
+              'Could not delete this request from the database. Run migration 003_override_requests_delete_policy.sql in Supabase (see supabase/README.md), or ask an admin to remove it.',
+            );
+          }
+        }
+      } finally {
+        setWithdrawingId(null);
+      }
+    },
+    [refresh],
+  );
 
   return (
     <>
@@ -120,9 +164,23 @@ export default function SupervisorRequestsPanel({ lineId, processId }) {
                           >
                             {statusLabel(row.status)}
                           </span>
-                          <span className="text-[10px] text-muted whitespace-nowrap">
-                            {formatSupervisorRequestWhen(row)}
-                          </span>
+                          <div className="flex items-center gap-1 shrink-0">
+                            <span className="text-[10px] text-muted whitespace-nowrap">
+                              {formatSupervisorRequestWhen(row)}
+                            </span>
+                            {canWithdrawRequest(row) && (
+                              <button
+                                type="button"
+                                onClick={() => withdrawRequest(row)}
+                                disabled={withdrawingId === row.id}
+                                className="rounded-md p-1 text-gray-500 hover:bg-red-50 hover:text-red-700 disabled:opacity-50"
+                                title="Remove request"
+                                aria-label="Remove request"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </button>
+                            )}
+                          </div>
                         </div>
                         <p className="text-sm font-medium text-gray-900 leading-snug">
                           {formatSupervisorRequestSummary(row)}

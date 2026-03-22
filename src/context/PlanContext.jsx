@@ -21,10 +21,18 @@ import {
 // because actual row state lives in the external store, not react context
 function PlanSync() {
   const skipRef = useRef(false);
+  const onlineDebounceRef = useRef(null);
   const { show: showSnackbar } = useSnackbar() ?? {};
 
   useEffect(() => {
     initPlanStore({ getSkipRef: () => skipRef });
+  }, []);
+
+  /** Stale Vite bundle can keep a Supabase client until restart; toggling force-local must reload to drop Realtime. */
+  useEffect(() => {
+    const reload = () => window.location.reload();
+    window.addEventListener('planner-force-local-changed', reload);
+    return () => window.removeEventListener('planner-force-local-changed', reload);
   }, []);
 
   useEffect(() => {
@@ -58,25 +66,34 @@ function PlanSync() {
     return () => window.removeEventListener('offline', onOffline);
   }, [showSnackbar]);
 
-  // Back online: clear local plan cache and force re-download (database is source of truth).
+  // Back online: re-fetch plan only when Supabase is actually enabled (getSupabase), with debounce — flaky `online` events
+  // were wiping local edits while users thought they were offline-only (stale env bundle + network blips).
   useEffect(() => {
     if (!isSupabaseConfigured()) return undefined;
     const onOnline = () => {
-      getPlan()
-        .then((data) => {
-          clearLocalRowsCache();
-          hydrateFromApi(data);
-          if (typeof showSnackbar === 'function') showSnackbar('Re-synced from database');
-        })
-        .catch(() => {
-          hydrateFromLocalStorage();
-          if (typeof showSnackbar === 'function') {
-            showSnackbar('Still could not reach database — using local cache');
-          }
-        });
+      if (onlineDebounceRef.current) clearTimeout(onlineDebounceRef.current);
+      onlineDebounceRef.current = window.setTimeout(() => {
+        onlineDebounceRef.current = null;
+        if (!isSupabaseConfigured() || !navigator.onLine) return;
+        getPlan()
+          .then((data) => {
+            clearLocalRowsCache();
+            hydrateFromApi(data);
+            if (typeof showSnackbar === 'function') showSnackbar('Re-synced from database');
+          })
+          .catch(() => {
+            hydrateFromLocalStorage();
+            if (typeof showSnackbar === 'function') {
+              showSnackbar('Still could not reach database — using local cache');
+            }
+          });
+      }, 1200);
     };
     window.addEventListener('online', onOnline);
-    return () => window.removeEventListener('online', onOnline);
+    return () => {
+      window.removeEventListener('online', onOnline);
+      if (onlineDebounceRef.current) clearTimeout(onlineDebounceRef.current);
+    };
   }, [showSnackbar]);
 
   useEffect(() => {

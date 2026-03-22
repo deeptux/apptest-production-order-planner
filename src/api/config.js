@@ -1,13 +1,16 @@
-import { supabase, SUPABASE_SCHEMA } from '../lib/supabase';
+import { getSupabase, SUPABASE_SCHEMA } from '../lib/supabase';
 
 function configTable() {
-  return supabase.schema(SUPABASE_SCHEMA).from('config');
+  const s = getSupabase();
+  if (!s) return null;
+  return s.schema(SUPABASE_SCHEMA).from('config');
 }
 
 // generic key/value bag in supabase (recipes, lines, ...)
 export async function getConfig(key) {
-  if (!supabase || !key) return null;
-  const { data, error } = await configTable()
+  const t = configTable();
+  if (!t || !key) return null;
+  const { data, error } = await t
     .select('key, payload')
     .eq('key', key)
     .maybeSingle();
@@ -19,13 +22,13 @@ export async function getConfig(key) {
 }
 
 export async function updateConfig(key, payload) {
-  if (!supabase || !key) return { ok: false };
-  const { error } = await configTable()
-    .upsert({
-      key,
-      payload: payload ?? {},
-      updated_at: new Date().toISOString(),
-    });
+  const t = configTable();
+  if (!t || !key) return { ok: false };
+  const { error } = await t.upsert({
+    key,
+    payload: payload ?? {},
+    updated_at: new Date().toISOString(),
+  });
   if (error) {
     console.error('updateConfig error', error);
     return { ok: false };
@@ -35,8 +38,9 @@ export async function updateConfig(key, payload) {
 
 /** Supabase Realtime (WebSocket) — fires when any row in apptest_prodplanner.config changes. Add table to replication publication (see supabase/README.md). */
 export function subscribeConfig(onKeyChange) {
-  if (!supabase || typeof onKeyChange !== 'function') return () => {};
-  const channel = supabase
+  const s = getSupabase();
+  if (!s || typeof onKeyChange !== 'function') return () => {};
+  const channel = s
     .channel('config-changes')
     .on(
       'postgres_changes',
@@ -48,6 +52,6 @@ export function subscribeConfig(onKeyChange) {
     )
     .subscribe();
   return () => {
-    supabase.removeChannel(channel);
+    s.removeChannel(channel);
   };
 }

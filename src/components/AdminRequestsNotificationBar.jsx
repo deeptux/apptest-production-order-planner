@@ -1,7 +1,6 @@
 import { useState, useCallback } from 'react';
 import { Bell } from 'lucide-react';
-import { usePendingOverrideRequests } from '../hooks/usePendingOverrideRequests';
-import { isSupabaseConfigured } from '../lib/supabase';
+import { useOverrideRequests } from '../context/OverrideRequestsContext';
 import { formatSupervisorRequestSummary, formatSupervisorRequestWhen } from '../constants/supervisorRequests';
 import AdminRequestReviewModal from './AdminRequestReviewModal';
 
@@ -9,7 +8,7 @@ import AdminRequestReviewModal from './AdminRequestReviewModal';
  * Planner-facing strip: pending supervisor requests. Scrolls when many items; click opens review modal.
  */
 export default function AdminRequestsNotificationBar() {
-  const { pending, refresh } = usePendingOverrideRequests();
+  const { pending, refresh, isLocalOnlyQueue } = useOverrideRequests();
   const [modalOpen, setModalOpen] = useState(false);
   const [selected, setSelected] = useState(null);
 
@@ -18,22 +17,25 @@ export default function AdminRequestsNotificationBar() {
     setModalOpen(true);
   }, []);
 
-  if (!isSupabaseConfigured()) return null;
   if (pending.length === 0) return null;
 
   return (
     <>
       <div
+        id="planner-supervisor-requests"
         role="region"
         aria-label="Supervisor requests"
-        className="shrink-0 border-b border-amber-200/90 bg-amber-50/95 text-amber-950"
+        className="shrink-0 border-b border-amber-200/90 bg-amber-50/95 text-amber-950 scroll-mt-[var(--header-height)]"
       >
         <div className="flex items-stretch min-h-[3rem] max-h-[7.5rem]">
           <div className="flex items-center gap-2 px-3 py-2 border-r border-amber-200/80 bg-amber-100/80 shrink-0">
             <Bell className="h-5 w-5 text-amber-800 shrink-0" aria-hidden />
             <div className="hidden sm:block leading-tight">
               <p className="text-xs font-bold uppercase tracking-wide text-amber-900">Supervisor requests</p>
-              <p className="text-[11px] text-amber-800/90">{pending.length} pending</p>
+              <p className="text-[11px] text-amber-800/90">
+                {pending.length} pending
+                {isLocalOnlyQueue ? ' · this browser only' : ''}
+              </p>
             </div>
             <span className="sm:hidden text-sm font-bold tabular-nums">{pending.length}</span>
           </div>

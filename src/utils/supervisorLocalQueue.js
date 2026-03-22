@@ -33,3 +33,43 @@ export function subscribeSupervisorLocalQueue(callback) {
     window.removeEventListener('storage', onStorage);
   };
 }
+
+/** Pending items for admin UI (same browser as supervisor Live View). */
+export function listPendingLocalSupervisorRequests() {
+  return readLocalSupervisorRequests().filter((r) => {
+    const s = String(r.status ?? 'pending_local').toLowerCase().trim();
+    return s === 'pending' || s === 'pending_local';
+  });
+}
+
+/** Remove one request entirely (supervisor withdraw). Updates admin + side panel via events. */
+export function removeLocalSupervisorRequest(id) {
+  if (!id) return false;
+  const list = readLocalSupervisorRequests().filter((r) => r.id !== id);
+  try {
+    localStorage.setItem(KEY, JSON.stringify(list));
+  } catch (_) {
+    return false;
+  }
+  window.dispatchEvent(new CustomEvent('loaf-supervisor-local-queue'));
+  return true;
+}
+
+export function updateLocalSupervisorRequestStatus(id, nextStatus, decidedBy = 'planner') {
+  if (!id) return false;
+  const list = readLocalSupervisorRequests();
+  const idx = list.findIndex((r) => r.id === id);
+  if (idx < 0) return false;
+  const row = { ...list[idx] };
+  row.status = nextStatus;
+  row.decided_at = new Date().toISOString();
+  row.decided_by = decidedBy;
+  list[idx] = row;
+  try {
+    localStorage.setItem(KEY, JSON.stringify(list));
+  } catch (_) {
+    return false;
+  }
+  window.dispatchEvent(new CustomEvent('loaf-supervisor-local-queue'));
+  return true;
+}

@@ -1,6 +1,7 @@
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { SnackbarProvider } from './context/SnackbarContext';
 import { PlanProvider } from './context/PlanContext';
+import { OverrideRequestsProvider } from './context/OverrideRequestsContext';
 import PlannerLayout from './components/PlannerLayout';
 import LiveStationPicker from './components/LiveStationPicker';
 import LiveStationView from './components/LiveStationView';
@@ -10,6 +11,7 @@ export default function App() {
   return (
     <SnackbarProvider>
     <PlanProvider>
+      <OverrideRequestsProvider>
       <Routes>
         <Route path="/" element={<Navigate to="/dashboard" replace />} />
         <Route path="/dashboard" element={<PlannerLayout />} />
@@ -22,6 +24,7 @@ export default function App() {
         <Route path="/live" element={<LiveStationPicker />} />
         <Route path="/live/:stationId" element={<LiveStationView />} />
       </Routes>
+      </OverrideRequestsProvider>
     </PlanProvider>
     </SnackbarProvider>
   );

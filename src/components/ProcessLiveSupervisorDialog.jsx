@@ -2,6 +2,7 @@ import { useState, useMemo, useEffect } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
 import { createOverride, resolveOverrideStationId } from '../api/overrides';
 import { isSupabaseConfigured } from '../lib/supabase';
+import { notifyAdminPendingOverridesRefresh } from '../context/OverrideRequestsContext';
 import { getSupervisorClientId } from '../utils/supervisorClientId';
 import { appendLocalSupervisorRequest } from '../utils/supervisorLocalQueue';
 
@@ -136,6 +137,7 @@ export default function ProcessLiveSupervisorDialog({
     if (res.ok) {
       setDone(true);
       onSubmitted?.();
+      notifyAdminPendingOverridesRefresh();
       setTimeout(() => onOpenChange(false), 1400);
     } else {
       setErr('Could not send request. Check database connection or try again.');
@@ -155,8 +157,8 @@ export default function ProcessLiveSupervisorDialog({
           </Dialog.Description>
           {!isSupabaseConfigured() && (
             <p className="mt-2 text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1.5">
-              Database offline — your request is saved on this device only and listed under &quot;My requests&quot;.
-              Connect Supabase so admins can receive it.
+              Saved on this device only — see <strong>My requests</strong>. Admins on other machines won&apos;t see it
+              until shared sync is on.
             </p>
           )}
           {done ? (

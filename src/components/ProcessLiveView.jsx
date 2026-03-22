@@ -20,6 +20,7 @@ import { buildProcessLiveStepperSteps } from '../utils/processLiveStepper';
 import { getRowProcessWindowMs, getLiveStepperState } from '../utils/processLiveWindow';
 import { pickSpotlightBatchRow } from '../utils/processLiveSpotlight';
 import { SUPERVISOR_REQUEST_BUTTON_CLASS } from '../constants/supervisorRequests';
+import { isSupabaseConfigured } from '../lib/supabase';
 import ProcessProfileStepper from './ProcessProfileStepper';
 import ProcessLiveCurrentBatchCard from './ProcessLiveCurrentBatchCard';
 import ProcessLiveSupervisorDialog from './ProcessLiveSupervisorDialog';
@@ -468,9 +469,9 @@ export default function ProcessLiveView() {
                 </Tooltip.Provider>
               </div>
               <p className="border-t border-gray-200 bg-surface-card-warm px-3 py-2 text-xs text-muted sm:px-4 sm:py-2.5 sm:text-sm md:text-base">
-                Plan updates when your database pushes changes (same as Dashboard / Scheduling). Row tooltips: hover or
-                click row (not the Request button). Stepper recalculates every {TICK_MS / 1000}s while a batch is in this
-                process window.
+                {isSupabaseConfigured()
+                  ? `Live plan updates when others save (same as Dashboard / Scheduling). Row tooltips: hover or tap the row (not Request). Stepper refreshes every ${TICK_MS / 1000}s while a batch is in this process.`
+                  : `Plan follows this browser’s saved schedule. Row tooltips: hover or tap the row (not Request). Stepper refreshes every ${TICK_MS / 1000}s while a batch is in this process.`}
               </p>
             </div>
           </>

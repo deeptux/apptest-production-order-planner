@@ -3,6 +3,7 @@ import { X, Check, Ban } from 'lucide-react';
 import { useState, useCallback } from 'react';
 import { approveOverride, rejectOverride } from '../api/overrides';
 import { usePlan } from '../context/PlanContext';
+import { updateLocalSupervisorRequestStatus } from '../utils/supervisorLocalQueue';
 import {
   formatSupervisorRequestSummary,
   formatSupervisorRequestWhen,
@@ -14,10 +15,23 @@ export default function AdminRequestReviewModal({ open, onOpenChange, request, o
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
 
+  const isLocalRequest = request?._source === 'local' || String(request?.id ?? '').startsWith('local-');
+
   const handleApprove = useCallback(async () => {
     if (!request?.id) return;
     setBusy(true);
     setErr('');
+    if (isLocalRequest) {
+      const ok = updateLocalSupervisorRequestStatus(request.id, 'approved', 'planner');
+      setBusy(false);
+      if (ok) {
+        onDecided?.();
+        onOpenChange(false);
+      } else {
+        setErr('Could not update local queue.');
+      }
+      return;
+    }
     const res = await approveOverride(request.id, {
       decided_by: 'planner',
       plan_date: planDate instanceof Date ? planDate.toISOString() : planDate,
@@ -30,12 +44,23 @@ export default function AdminRequestReviewModal({ open, onOpenChange, request, o
     } else {
       setErr('Could not approve. Try again.');
     }
-  }, [request?.id, planDate, rows, onDecided, onOpenChange]);
+  }, [request?.id, isLocalRequest, planDate, rows, onDecided, onOpenChange]);
 
   const handleReject = useCallback(async () => {
     if (!request?.id) return;
     setBusy(true);
     setErr('');
+    if (isLocalRequest) {
+      const ok = updateLocalSupervisorRequestStatus(request.id, 'rejected', 'planner');
+      setBusy(false);
+      if (ok) {
+        onDecided?.();
+        onOpenChange(false);
+      } else {
+        setErr('Could not update local queue.');
+      }
+      return;
+    }
     const res = await rejectOverride(request.id, 'planner');
     setBusy(false);
     if (res.ok) {
@@ -44,7 +69,7 @@ export default function AdminRequestReviewModal({ open, onOpenChange, request, o
     } else {
       setErr('Could not reject. Try again.');
     }
-  }, [request?.id, onDecided, onOpenChange]);
+  }, [request?.id, isLocalRequest, onDecided, onOpenChange]);
 
   if (!request) return null;
 
@@ -71,7 +96,14 @@ export default function AdminRequestReviewModal({ open, onOpenChange, request, o
             </Dialog.Close>
           </div>
           <Dialog.Description className="text-sm text-muted">
-            Acknowledge the request and approve (records decision + optional plan sync) or reject.
+            {isLocalRequest ? (
+              <>
+                Stored on <strong className="text-gray-800">this browser</strong> only. Approve/reject updates the list
+                here; apply schedule edits in <strong className="text-gray-800">Scheduling</strong>.
+              </>
+            ) : (
+              <>Acknowledge the request and approve (records decision + optional plan sync) or reject.</>
+            )}
           </Dialog.Description>
 
           <dl className="mt-4 space-y-2 text-sm">

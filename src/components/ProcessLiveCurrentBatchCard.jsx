@@ -7,11 +7,11 @@ import { isSupabaseConfigured } from '../lib/supabase';
  * or a compact “idle / next” state when none.
  */
 function RealtimeFootnote() {
-  const text = isSupabaseConfigured()
-    ? 'Plan rows sync across browsers when your database is connected with live replication. This page also refreshes timers periodically so status and the stepper stay aligned with the clock. On reconnect, the app reloads the plan from the database as the source of truth; offline, it keeps using local cache.'
-    : 'Connect your database (project setup) for live plan sync across browsers. Until then, this session uses local data. Timers still refresh periodically for status and the stepper.';
+  if (isSupabaseConfigured()) return null;
   return (
-    <p className="mt-3 text-xs sm:text-sm text-muted leading-relaxed border-t border-gray-200/80 pt-3">{text}</p>
+    <p className="mt-3 text-xs sm:text-sm text-muted leading-snug border-t border-gray-200/80 pt-3">
+      Schedule and timers use data on this device; other browsers won&apos;t see the same view until shared sync is on.
+    </p>
   );
 }
 

@@ -1,4 +1,4 @@
-import { supabase, SUPABASE_SCHEMA } from '../lib/supabase';
+import { getSupabase, SUPABASE_SCHEMA } from '../lib/supabase';
 
 const VALID_STATIONS = ['mixing', 'makeup-dividing', 'makeup-panning', 'baking', 'packaging'];
 
@@ -12,19 +12,22 @@ export function resolveOverrideStationId(processId) {
 }
 
 function overridesTable() {
-  return supabase.schema(SUPABASE_SCHEMA).from('override_requests');
+  const s = getSupabase();
+  if (!s) return null;
+  return s.schema(SUPABASE_SCHEMA).from('override_requests');
 }
 
 function planTable() {
-  return supabase.schema(SUPABASE_SCHEMA).from('plan');
+  const s = getSupabase();
+  if (!s) return null;
+  return s.schema(SUPABASE_SCHEMA).from('plan');
 }
 
 // opts.status filters pending | approved | rejected if you pass it
 export async function listOverrides(opts = {}) {
-  if (!supabase) return [];
-  let q = overridesTable()
-    .select('*')
-    .order('created_at', { ascending: false });
+  const t = overridesTable();
+  if (!t) return [];
+  let q = t.select('*').order('created_at', { ascending: false });
   if (opts.status) {
     q = q.eq('status', opts.status);
   }
@@ -36,14 +39,33 @@ export async function listOverrides(opts = {}) {
   return data ?? [];
 }
 
+/** Pending rows only — filters in JS so we never miss rows if status default / casing differs. */
+export async function listPendingOverrideRequests() {
+  const t = overridesTable();
+  if (!t) return [];
+  const { data, error } = await t
+    .select('*')
+    .order('created_at', { ascending: false })
+    .limit(300);
+  if (error) {
+    console.error('listPendingOverrideRequests error', error);
+    return [];
+  }
+  return (data ?? []).filter((r) => {
+    const s = String(r.status ?? 'pending').toLowerCase().trim();
+    return s === 'pending';
+  });
+}
+
 /**
  * Requests submitted from this browser (payload.supervisorClientId), optionally scoped to one live URL.
  * Client-side filter after a capped fetch — fine for typical queue sizes.
  */
 export async function listOverridesForSupervisor(clientId, opts = {}) {
-  if (!supabase || !clientId) return [];
+  const t = overridesTable();
+  if (!t || !clientId) return [];
   const { lineId, processId, limit = 50 } = opts;
-  const { data, error } = await overridesTable()
+  const { data, error } = await t
     .select('*')
     .order('created_at', { ascending: false })
     .limit(400);
@@ -59,13 +81,15 @@ export async function listOverridesForSupervisor(clientId, opts = {}) {
 
 // station_id must be one of VALID_STATIONS or insert gets skipped
 export async function createOverride({ station_id, payload = {}, requested_by }) {
-  if (!supabase) return { ok: false, id: null };
+  const t = overridesTable();
+  if (!t) return { ok: false, id: null };
   if (!VALID_STATIONS.includes(station_id)) return { ok: false, id: null };
-  const { data, error } = await overridesTable()
+  const { data, error } = await t
     .insert({
       station_id,
       payload: typeof payload === 'object' ? payload : {},
       requested_by: requested_by ?? null,
+      status: 'pending',
     })
     .select('id')
     .single();
@@ -78,8 +102,10 @@ export async function createOverride({ station_id, payload = {}, requested_by })
 
 // if opts includes plan_date + rows we also PATCH the latest plan row (supervisor flow)
 export async function approveOverride(overrideId, opts = {}) {
-  if (!supabase) return { ok: false };
-  const { error: updateError } = await overridesTable()
+  const ot = overridesTable();
+  const pt = planTable();
+  if (!ot) return { ok: false };
+  const { error: updateError } = await ot
     .update({
       status: 'approved',
       decided_at: new Date().toISOString(),
@@ -90,11 +116,11 @@ export async function approveOverride(overrideId, opts = {}) {
     console.error('approveOverride error', updateError);
     return { ok: false };
   }
-  if (opts.plan_date != null && opts.rows != null) {
-    const { data: planRows } = await planTable().select('id').order('updated_at', { ascending: false }).limit(1);
+  if (pt && opts.plan_date != null && opts.rows != null) {
+    const { data: planRows } = await pt.select('id').order('updated_at', { ascending: false }).limit(1);
     const planId = planRows?.[0]?.id;
     if (planId) {
-      await planTable().update({
+      await pt.update({
         plan_date: opts.plan_date,
         rows: opts.rows,
         updated_at: new Date().toISOString(),
@@ -106,8 +132,9 @@ export async function approveOverride(overrideId, opts = {}) {
 }
 
 export async function rejectOverride(overrideId, decided_by) {
-  if (!supabase) return { ok: false };
-  const { error } = await overridesTable()
+  const t = overridesTable();
+  if (!t) return { ok: false };
+  const { error } = await t
     .update({
       status: 'rejected',
       decided_at: new Date().toISOString(),
@@ -121,16 +148,38 @@ export async function rejectOverride(overrideId, decided_by) {
   return { ok: true };
 }
 
+/** Supervisor withdraws their own pending row, or admin removes it. Requires DELETE RLS (see migration 003). */
+export async function deleteOverride(overrideId) {
+  const t = overridesTable();
+  if (!t || !overrideId) return { ok: false };
+  const { error } = await t.delete().eq('id', overrideId);
+  if (error) {
+    console.error('deleteOverride error', error);
+    return { ok: false };
+  }
+  return { ok: true };
+}
+
 // supabase realtime — remember to call the returned unsub on unmount
 export function subscribeOverrides(onEvent) {
-  if (!supabase || !onEvent) return () => {};
-  const channel = supabase
-    .channel('override-changes')
-    .on('postgres_changes', { event: '*', schema: SUPABASE_SCHEMA, table: 'override_requests' }, (payload) => {
-      onEvent(payload);
-    })
-    .subscribe();
+  const s = getSupabase();
+  if (!s || !onEvent) return () => {};
+  const channelName = `loaf-override-requests:${SUPABASE_SCHEMA}`;
+  const channel = s
+    .channel(channelName)
+    .on(
+      'postgres_changes',
+      { event: '*', schema: SUPABASE_SCHEMA, table: 'override_requests' },
+      (payload) => {
+        onEvent(payload);
+      },
+    )
+    .subscribe((status) => {
+      if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+        console.warn('subscribeOverrides: Realtime channel issue — pending list may lag until refresh.');
+      }
+    });
   return () => {
-    supabase.removeChannel(channel);
+    s.removeChannel(channel);
   };
 }
