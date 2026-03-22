@@ -9,24 +9,15 @@ import GanttChart from './GanttChart';
 import { OutputByProductChart } from './OutputByProductChart';
 import OverrideQueue from './OverrideQueue';
 import { DEMO_APP_NOTICE_TITLE, DEMO_APP_NOTICE_BODY } from '../constants/demoNotice';
-import { getLines, LINES_STORAGE_KEY } from '../store/productionLinesStore';
+import { useLinesList } from '../hooks/useConfigStores';
 
 export default function DashboardView() {
   const navigate = useNavigate();
   const [demoModalOpen, setDemoModalOpen] = useState(false);
   const [demoModalMessage, setDemoModalMessage] = useState('');
 
-  // production page saved lines in another browser tab — bump tick so we re-read getLines()
-  const [linesTick, setLinesTick] = useState(0);
-  useEffect(() => {
-    const onStorage = (e) => {
-      if (e.key === LINES_STORAGE_KEY) setLinesTick((t) => t + 1);
-    };
-    window.addEventListener('storage', onStorage);
-    return () => window.removeEventListener('storage', onStorage);
-  }, []);
-
-  const lines = useMemo(() => getLines(), [linesTick]);
+  // Same-tab edits, other tabs (storage → hydrate in PlanSync), and Supabase Realtime all bump the lines store.
+  const lines = useLinesList();
 
   const [selectedLineId, setSelectedLineId] = useState(() => getLines()[0]?.id ?? '');
 

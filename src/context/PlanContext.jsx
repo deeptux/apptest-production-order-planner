@@ -1,9 +1,9 @@
 import { useSyncExternalStore, useRef, useEffect } from 'react';
 import { getPlan, subscribePlan } from '../api/plan';
-import { getConfig, updateConfig } from '../api/config';
+import { getConfig, updateConfig, subscribeConfig } from '../api/config';
 import { isSupabaseConfigured } from '../lib/supabase';
-import { hydrateRecipesFromApi, getRecipesPayloadForApi } from '../store/recipeStore';
-import { hydrateLinesFromApi, getLinesPayloadForApi } from '../store/productionLinesStore';
+import { hydrateRecipesFromApi, getRecipesPayloadForApi, LOAF_RECIPES_KEY } from '../store/recipeStore';
+import { hydrateLinesFromApi, getLinesPayloadForApi, LINES_STORAGE_KEY } from '../store/productionLinesStore';
 import { useSnackbar } from './SnackbarContext';
 import {
   initPlanStore,
@@ -79,6 +79,56 @@ function PlanSync() {
         if (lines.length > 0) updateConfig('lines', { lines });
       }
     });
+  }, []);
+
+  // Supabase Realtime on config (recipes / lines) — WebSocket-backed, same as plan.
+  useEffect(() => {
+    if (!isSupabaseConfigured()) return undefined;
+    const unsub = subscribeConfig((key, row) => {
+      if (key === 'recipes') {
+        const list = row?.payload?.recipes;
+        if (Array.isArray(list) && list.length > 0) {
+          hydrateRecipesFromApi(list);
+        } else {
+          getConfig('recipes').then((data) => {
+            if (data?.payload?.recipes && Array.isArray(data.payload.recipes) && data.payload.recipes.length > 0) {
+              hydrateRecipesFromApi(data.payload.recipes);
+            }
+          });
+        }
+        return;
+      }
+      if (key === 'lines') {
+        const list = row?.payload?.lines;
+        if (Array.isArray(list) && list.length > 0) {
+          hydrateLinesFromApi(list);
+        } else {
+          getConfig('lines').then((data) => {
+            if (data?.payload?.lines && Array.isArray(data.payload.lines) && data.payload.lines.length > 0) {
+              hydrateLinesFromApi(data.payload.lines);
+            }
+          });
+        }
+      }
+    });
+    return unsub;
+  }, []);
+
+  // Offline / no Supabase: other tabs writing localStorage for recipes or lines
+  useEffect(() => {
+    if (isSupabaseConfigured()) return undefined;
+    const onStorage = (e) => {
+      if (e.key !== LOAF_RECIPES_KEY && e.key !== LINES_STORAGE_KEY) return;
+      if (e.newValue == null) return;
+      try {
+        const parsed = JSON.parse(e.newValue);
+        if (!Array.isArray(parsed)) return;
+        if (e.key === LOAF_RECIPES_KEY && parsed.length > 0) hydrateRecipesFromApi(parsed);
+        if (e.key === LINES_STORAGE_KEY && parsed.length > 0) hydrateLinesFromApi(parsed);
+      } catch (_) {}
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
   }, []);
 
   useEffect(() => {

@@ -7,7 +7,17 @@ This app uses a **dedicated schema** `apptest_prodplanner`. The Supabase REST AP
    - **001_initial.sql** — creates schema `apptest_prodplanner` and tables `plan`, `override_requests`.
    - **002_expose_schema_grants.sql** — grants so `anon`/`authenticated`/`service_role` can use the schema (required for API access).
 3. **Expose the schema (required for real-time sync):** In Dashboard go to **Project Settings → API**. Find **“Exposed schemas”** and add **`apptest_prodplanner`** to the list. Save. Without this, `getPlan`/`updatePlan` and override APIs return 406 and the other browser client will never receive updates.
-4. In **Database → Replication**: add **apptest_prodplanner.plan** and **apptest_prodplanner.override_requests** to the `supabase_realtime` publication.
+4. **Realtime publication (not “Platform → Replication”):** The left sidebar item **Database → Replication** under **PLATFORM** is only for read replicas / external pipelines — that is **not** where you enable Realtime tables.
+   - **Option A — Dashboard:** In the left sidebar under **DATABASE MANAGEMENT**, open **Publications**. Select the **`supabase_realtime`** publication and add these tables (schema **`apptest_prodplanner`**): **`plan`**, **`override_requests`**, **`config`**. Save.
+   - **Option B — SQL Editor:** Run (repeat only for tables not already in the publication; skip lines that error with “already member”):
+
+```sql
+alter publication supabase_realtime add table apptest_prodplanner.plan;
+alter publication supabase_realtime add table apptest_prodplanner.override_requests;
+alter publication supabase_realtime add table apptest_prodplanner.config;
+```
+
+   Without **`config`**, recipes and production lines do not live-sync across browsers (plan and overrides still can).
 5. In **Settings → API**: copy **Project URL** and **anon public** key into your app `.env` as `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`.
 
 **Optional:** To use a different schema name, set `VITE_SUPABASE_SCHEMA=your_schema` and create that schema/tables with the same structure, then expose that schema and grant the same privileges.

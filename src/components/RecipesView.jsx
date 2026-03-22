@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { Plus, Pencil, Trash2, Check, X } from 'lucide-react';
 import * as Dialog from '@radix-ui/react-dialog';
@@ -12,12 +12,15 @@ import {
 } from '../store/recipeStore';
 import { getLines, getProcessesForLine, getMixingProfiles, getProfileTotalMinutes, updateProductNameInCapacityProfiles } from '../store/productionLinesStore';
 import { updateProductNameInRows } from '../store/planStore';
+import { useLinesVersion, useRecipesVersion } from '../hooks/useConfigStores';
 
 export default function RecipesView() {
+  const { version: recipesVersion } = useRecipesVersion();
+  const { version: linesVersion } = useLinesVersion();
   const [selectedLineId, setSelectedLineId] = useState(''); // '' = All lines
-  const allRecipes = getRecipes();
+  const allRecipes = useMemo(() => getRecipes(), [recipesVersion]);
+  const lines = useMemo(() => getLines(), [linesVersion]);
   const recipes = selectedLineId ? getRecipesForLine(selectedLineId) : allRecipes;
-  const lines = getLines();
   const processesForColumns = selectedLineId
     ? getProcessesForLine(selectedLineId)
     : (lines[0] ? getProcessesForLine(lines[0].id) : []);

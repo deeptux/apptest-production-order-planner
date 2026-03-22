@@ -93,20 +93,51 @@ function normalizeRecipe(r) {
 
 let recipes = loadRecipes();
 
-function persist() {
+const recipeListeners = new Set();
+let recipeVersion = 0;
+let cachedRecipeSnapshot = { version: 0 };
+
+function bumpRecipeVersion() {
+  recipeVersion += 1;
+  cachedRecipeSnapshot = { version: recipeVersion };
+  recipeListeners.forEach((fn) => {
+    try {
+      fn();
+    } catch (e) {
+      console.error('recipeStore listener', e);
+    }
+  });
+}
+
+/** React useSyncExternalStore — subscribe to recipe list changes (local edits, Realtime, other-tab storage). */
+export function subscribeRecipes(listener) {
+  recipeListeners.add(listener);
+  return () => recipeListeners.delete(listener);
+}
+
+export function getRecipesSnapshot() {
+  return cachedRecipeSnapshot;
+}
+
+function persistLocalOnly() {
   try {
     localStorage.setItem(LOAF_RECIPES_KEY, JSON.stringify(recipes));
   } catch (_) {}
+  bumpRecipeVersion();
+}
+
+function persist() {
+  persistLocalOnly();
   if (isSupabaseConfigured()) {
     updateConfig('recipes', { recipes }); // async, key "recipes"
   }
 }
 
-// supabase config pull -> memory
+// supabase / cross-tab pull -> memory (do not upsert back to Supabase — avoids echo + extra writes)
 export function hydrateRecipesFromApi(list) {
   if (!Array.isArray(list) || list.length === 0) return;
   recipes = list.map((r) => normalizeRecipe(r));
-  persist();
+  persistLocalOnly();
 }
 
 // body for PATCH config

@@ -204,20 +204,51 @@ function loadLines() {
 
 let lines = loadLines();
 
-function persist() {
+const lineListeners = new Set();
+let linesVersion = 0;
+let cachedLinesSnapshot = { version: 0 };
+
+function bumpLinesVersion() {
+  linesVersion += 1;
+  cachedLinesSnapshot = { version: linesVersion };
+  lineListeners.forEach((fn) => {
+    try {
+      fn();
+    } catch (e) {
+      console.error('productionLinesStore listener', e);
+    }
+  });
+}
+
+/** React useSyncExternalStore — subscribe to production lines changes (local edits, Realtime, other-tab storage). */
+export function subscribeLines(listener) {
+  lineListeners.add(listener);
+  return () => lineListeners.delete(listener);
+}
+
+export function getLinesSnapshot() {
+  return cachedLinesSnapshot;
+}
+
+function persistLocalOnly() {
   try {
     localStorage.setItem(LINES_STORAGE_KEY, JSON.stringify(lines));
   } catch (_) {}
+  bumpLinesVersion();
+}
+
+function persist() {
+  persistLocalOnly();
   if (isSupabaseConfigured()) {
     updateConfig('lines', { lines }); // async, key "lines"
   }
 }
 
-// supabase config pull -> memory
+// supabase / cross-tab pull -> memory (do not upsert back to Supabase)
 export function hydrateLinesFromApi(list) {
   if (!Array.isArray(list) || list.length === 0) return;
   lines = list.map((l) => normalizeLine(l));
-  persist();
+  persistLocalOnly();
 }
 
 export function getLinesPayloadForApi() {

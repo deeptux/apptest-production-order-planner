@@ -76,5 +76,6 @@ create policy "Allow public update config"
   using (true)
   with check (true);
 
--- Realtime: In Supabase Dashboard, go to Database > Replication and add
--- apptest_prodplanner.plan and apptest_prodplanner.override_requests to the supabase_realtime publication.
+-- Realtime: Database > Publications > supabase_realtime — add tables
+-- apptest_prodplanner.plan, override_requests, config (NOT Platform > Replication).
+-- Or: alter publication supabase_realtime add table apptest_prodplanner.config;

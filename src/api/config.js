@@ -33,3 +33,21 @@ export async function updateConfig(key, payload) {
   return { ok: true };
 }
 
+/** Supabase Realtime (WebSocket) — fires when any row in apptest_prodplanner.config changes. Add table to replication publication (see supabase/README.md). */
+export function subscribeConfig(onKeyChange) {
+  if (!supabase || typeof onKeyChange !== 'function') return () => {};
+  const channel = supabase
+    .channel('config-changes')
+    .on(
+      'postgres_changes',
+      { event: '*', schema: SUPABASE_SCHEMA, table: 'config' },
+      (payload) => {
+        const key = payload.new?.key ?? payload.old?.key;
+        if (key) onKeyChange(key, payload.new ?? null);
+      },
+    )
+    .subscribe();
+  return () => {
+    supabase.removeChannel(channel);
+  };
+}

@@ -17,6 +17,7 @@ import { getProductionStatus } from '../utils/productionStatus';
 import { getRecipesForLine, getTotalProcessMinutes, getTotalProcessMinutesForLine } from '../store/recipeStore';
 import { getCapacityForProduct, getDoughWeightKgForProduct, getGramsPerUnitForProduct, getTotalDoughWeightKgForProduct, getYieldForProduct } from '../store/capacityProfileStore';
 import { getLines, getLineById } from '../store/productionLinesStore';
+import { useLinesVersion, useRecipesVersion } from '../hooks/useConfigStores';
 import { DEMO_APP_NOTICE_TITLE, DEMO_APP_NOTICE_BODY } from '../constants/demoNotice';
 
 const FIELDS_THAT_TRIGGER_AUTO_ADJUST = ['startSponge', 'product'];
@@ -191,7 +192,9 @@ export default function SchedulingView() {
   const [timeConflictCountdown, setTimeConflictCountdown] = useState(0);
   const [deleteConfirmCountdown, setDeleteConfirmCountdown] = useState(0);
   const [orderHelpOpen, setOrderHelpOpen] = useState(false);
-  const lines = getLines();
+  const { version: linesVersion } = useLinesVersion();
+  const { version: recipesVersion } = useRecipesVersion();
+  const lines = useMemo(() => getLines(), [linesVersion]);
 
   useEffect(() => {
     return () => {
@@ -277,7 +280,7 @@ export default function SchedulingView() {
     const lineName = getLineById(selectedLineId)?.name || 'the selected line';
     if (!isFilterAll && showAllDates) return `all production orders for ${lineName} (all dates)`;
     return `all production orders for ${lineName} on ${dateLabel || 'the selected date'}`;
-  }, [getLineById, isFilterAll, planDateStr, selectedLineId, showAllDates, formatDateRelative]);
+  }, [isFilterAll, planDateStr, selectedLineId, showAllDates, formatDateRelative, linesVersion]);
 
   const handleDeleteAllDisplayed = useCallback(() => {
     const ids = new Set(displayedRows.map((r) => r.id));
@@ -366,8 +369,14 @@ export default function SchedulingView() {
     if (dateTimeSort?.key !== key || !dateTimeSort?.dir) return '↕';
     return dateTimeSort.dir === 'desc' ? '↓' : '↑';
   }, [dateTimeSort, viewMode]);
-  const lineIdForNewBatch = selectedLineId && selectedLineId !== 'all' ? selectedLineId : getLines()[0]?.id;
-  const recipeOptions = lineIdForNewBatch ? getRecipesForLine(lineIdForNewBatch) : [];
+  const lineIdForNewBatch = useMemo(
+    () => (selectedLineId && selectedLineId !== 'all' ? selectedLineId : lines[0]?.id),
+    [selectedLineId, lines],
+  );
+  const recipeOptions = useMemo(
+    () => (lineIdForNewBatch ? getRecipesForLine(lineIdForNewBatch) : []),
+    [lineIdForNewBatch, recipesVersion],
+  );
   const { orderBatch: orderBatchMap, lineBatch: lineBatchMap } = useMemo(
     () => getOrderBatchAndLineBatch(rows),
     [rows]

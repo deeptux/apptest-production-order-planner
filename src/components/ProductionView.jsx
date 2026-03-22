@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { Plus, Pencil, Trash2, Check, X, Search } from 'lucide-react';
 import * as Tabs from '@radix-ui/react-tabs';
@@ -37,6 +37,7 @@ import {
 } from '../store/productionLinesStore';
 import { getRecipes } from '../store/recipeStore';
 import { getMachines, addMachine, updateMachine, deleteMachine, resetMachinesToDefaults } from '../store/machinesStore';
+import { useLinesVersion, useRecipesVersion } from '../hooks/useConfigStores';
 
 function MachinesTabContent({ activeTab }) {
   const [machines, setMachinesState] = useState(() => getMachines());
@@ -175,6 +176,8 @@ function MachinesTabContent({ activeTab }) {
 }
 
 export default function ProductionView() {
+  const { version: linesStoreVersion } = useLinesVersion();
+  const { version: recipesStoreVersion } = useRecipesVersion();
   const [lines, setLinesState] = useState(() => getLines());
   const [selectedLineId, setSelectedLineId] = useState(() => getLines()[0]?.id ?? 'line-loaf');
   const [capacityProfile, setCapacityProfileState] = useState(() => getCapacityProfileForLine(getLines()[0]?.id ?? 'line-loaf'));
@@ -221,9 +224,19 @@ export default function ProductionView() {
 
   const pipelineHelpText = 'Marks a step as a pipelining breakpoint. This enables pipelined batching so multiple batches can be executed within the same process before the previous batch finishes the entire line.';
 
+  useEffect(() => {
+    const next = getLines();
+    setLinesState(next);
+    if (next.length && !next.some((l) => l.id === selectedLineId)) {
+      const firstId = next[0].id;
+      setSelectedLineId(firstId);
+      setCapacityProfileState(getCapacityProfileForLine(firstId));
+    }
+  }, [linesStoreVersion, selectedLineId]);
+
   const selectedLine = getLineById(selectedLineId) ?? lines[0];
   const processes = selectedLine ? getProcessesForLine(selectedLine.id) : [];
-  const recipes = getRecipes();
+  const recipes = useMemo(() => getRecipes(), [recipesStoreVersion]);
   const machinesList = getMachines();
   const equipmentDropdownSearchLower = equipmentDropdownSearch.trim().toLowerCase();
   const machinesFilteredForDropdown = equipmentDropdownSearchLower
