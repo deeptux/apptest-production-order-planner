@@ -36,6 +36,27 @@ export async function listOverrides(opts = {}) {
   return data ?? [];
 }
 
+/**
+ * Requests submitted from this browser (payload.supervisorClientId), optionally scoped to one live URL.
+ * Client-side filter after a capped fetch — fine for typical queue sizes.
+ */
+export async function listOverridesForSupervisor(clientId, opts = {}) {
+  if (!supabase || !clientId) return [];
+  const { lineId, processId, limit = 50 } = opts;
+  const { data, error } = await overridesTable()
+    .select('*')
+    .order('created_at', { ascending: false })
+    .limit(400);
+  if (error) {
+    console.error('listOverridesForSupervisor error', error);
+    return [];
+  }
+  let rows = (data ?? []).filter((r) => r.payload?.supervisorClientId === clientId);
+  if (lineId) rows = rows.filter((r) => r.payload?.productionLineId === lineId);
+  if (processId) rows = rows.filter((r) => r.payload?.processId === processId);
+  return rows.slice(0, limit);
+}
+
 // station_id must be one of VALID_STATIONS or insert gets skipped
 export async function createOverride({ station_id, payload = {}, requested_by }) {
   if (!supabase) return { ok: false, id: null };

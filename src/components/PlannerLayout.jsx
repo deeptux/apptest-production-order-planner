@@ -2,6 +2,7 @@ import { useState, useCallback } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { usePlan } from '../context/PlanContext';
 import { PLAN_SYNC_SOURCE } from '../store/planStore';
+import AdminRequestsNotificationBar from './AdminRequestsNotificationBar';
 import Topbar from './Topbar';
 import Sidebar from './Sidebar';
 import SidebarDrawer from './SidebarDrawer';
@@ -62,6 +63,7 @@ export default function PlannerLayout() {
         </div>
       )}
       <Topbar onMenuClick={() => setSidebarOpen((o) => !o)} />
+      <AdminRequestsNotificationBar />
       <SidebarDrawer
         open={sidebarOpen}
         onOpenChange={setSidebarOpen}

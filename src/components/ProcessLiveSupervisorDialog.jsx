@@ -2,34 +2,41 @@ import { useState, useMemo, useEffect } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
 import { createOverride, resolveOverrideStationId } from '../api/overrides';
 import { isSupabaseConfigured } from '../lib/supabase';
+import { getSupervisorClientId } from '../utils/supervisorClientId';
+import { appendLocalSupervisorRequest } from '../utils/supervisorLocalQueue';
 
 const ACTION_DEFS = [
   {
     value: 'supervisor_reorder',
-    label: 'Request reorder (vs other batches on this line)',
+    label: 'Reorder batch (vs other batches on this line)',
     needsRow: true,
     notBreak: true,
   },
   {
+    value: 'supervisor_add_batch',
+    label: 'Add new batch (Scheduling)',
+    needsRow: false,
+  },
+  {
     value: 'supervisor_insert_time_blocker',
-    label: 'Request insert time blocker',
+    label: 'Insert time blocker',
     needsRow: false,
   },
   {
     value: 'supervisor_remove_time_blocker',
-    label: 'Request remove this time blocker',
+    label: 'Remove this time blocker',
     needsRow: true,
     breakOnly: true,
   },
   {
     value: 'supervisor_edit_batch',
-    label: 'Request edit to this batch',
+    label: 'Update / edit this batch',
     needsRow: true,
     notBreak: true,
   },
   {
     value: 'supervisor_delete_batch',
-    label: 'Request delete this batch',
+    label: 'Delete this batch',
     needsRow: true,
     notBreak: true,
   },
@@ -48,6 +55,7 @@ export default function ProcessLiveSupervisorDialog({
   processId,
   processName,
   row,
+  onSubmitted,
 }) {
   const [action, setAction] = useState('supervisor_general');
   const [note, setNote] = useState('');
@@ -80,31 +88,55 @@ export default function ProcessLiveSupervisorDialog({
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!isSupabaseConfigured()) {
-      setErr('Database is not configured — admins cannot receive requests from this device yet.');
+    const noteTrim = note.trim();
+    if (noteTrim.length < 3) {
+      setErr('Please add a short description (at least 3 characters) for the admin.');
       return;
     }
-    setSending(true);
-    setErr('');
+
+    const supervisorClientId = getSupervisorClientId();
+    const requestedByLabel = `Supervisor · ${lineName || lineId} · ${processName || processId}`;
+
     const payload = {
       kind: action,
       productionLineId: lineId,
+      lineName: lineName || lineId,
       processId,
-      processName,
-      note: note.trim(),
+      processName: processName || processId,
+      note: noteTrim,
       rowId: row?.id ?? null,
       product: row?.product ?? null,
       isBreak: Boolean(row?.isBreak),
+      supervisorClientId,
     };
+
+    if (!isSupabaseConfigured()) {
+      appendLocalSupervisorRequest({
+        id: `local-${crypto.randomUUID()}`,
+        station_id: resolveOverrideStationId(processId),
+        status: 'pending_local',
+        requested_at: new Date().toISOString(),
+        requested_by: requestedByLabel,
+        payload,
+      });
+      setDone(true);
+      onSubmitted?.();
+      setTimeout(() => onOpenChange(false), 1200);
+      return;
+    }
+
+    setSending(true);
+    setErr('');
     const res = await createOverride({
       station_id: resolveOverrideStationId(processId),
-      requested_by: `Supervisor · ${lineName || lineId} · ${processName || processId}`,
+      requested_by: requestedByLabel,
       payload,
     });
     setSending(false);
     if (res.ok) {
       setDone(true);
-      setTimeout(() => onOpenChange(false), 1600);
+      onSubmitted?.();
+      setTimeout(() => onOpenChange(false), 1400);
     } else {
       setErr('Could not send request. Check database connection or try again.');
     }
@@ -117,16 +149,18 @@ export default function ProcessLiveSupervisorDialog({
         <Dialog.Content className="fixed left-1/2 top-1/2 z-[121] w-full max-w-md -translate-x-1/2 -translate-y-1/2 rounded-lg border border-gray-200 bg-white p-4 shadow-lg max-h-[90vh] overflow-y-auto">
           <Dialog.Title className="text-lg font-semibold text-gray-900">Request change from admin</Dialog.Title>
           <Dialog.Description className="text-sm text-muted mt-1">
-            Supervisors send requests here. Planners review them in the dashboard override queue and apply changes in
-            Scheduling / Production / Recipes.
+            Choose what you need. Row-specific requests are also available from the <strong>Request</strong> button on
+            each batch or time blocker. Admins see pending items in the planner notification bar and acknowledge them
+            there.
           </Dialog.Description>
           {!isSupabaseConfigured() && (
             <p className="mt-2 text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1.5">
-              Connect the database in project settings to deliver requests to admins.
+              Database offline — your request is saved on this device only and listed under &quot;My requests&quot;.
+              Connect Supabase so admins can receive it.
             </p>
           )}
           {done ? (
-            <p className="mt-4 text-sm font-medium text-green-800">Request sent.</p>
+            <p className="mt-4 text-sm font-medium text-green-800">Request saved.</p>
           ) : (
             <form onSubmit={handleSubmit} className="mt-4 space-y-3">
               <div>
@@ -155,9 +189,9 @@ export default function ProcessLiveSupervisorDialog({
                   value={note}
                   onChange={(e) => setNote(e.target.value)}
                   rows={4}
-                  placeholder="Describe the change needed (times, position, quantities, reason…)"
+                  placeholder="What should change? (times, order, quantities, new batch, reason…)"
                   className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900"
-                  required
+                  minLength={3}
                 />
               </div>
               {err && <p className="text-sm text-red-600">{err}</p>}
@@ -172,7 +206,7 @@ export default function ProcessLiveSupervisorDialog({
                 </Dialog.Close>
                 <button
                   type="submit"
-                  disabled={sending || !note.trim()}
+                  disabled={sending || note.trim().length < 3}
                   className="px-4 py-2 rounded-lg bg-primary text-white text-sm font-medium hover:bg-primary-dark disabled:opacity-50"
                 >
                   {sending ? 'Sending…' : 'Send request'}

@@ -7,7 +7,6 @@ import SectionTabs from './SectionTabs';
 import PlanTable from './PlanTable';
 import GanttChart from './GanttChart';
 import { OutputByProductChart } from './OutputByProductChart';
-import OverrideQueue from './OverrideQueue';
 import { DEMO_APP_NOTICE_TITLE, DEMO_APP_NOTICE_BODY } from '../constants/demoNotice';
 import { useLinesList } from '../hooks/useConfigStores';
 
@@ -71,7 +70,6 @@ export default function DashboardView() {
 
   return (
     <div className="p-4 sm:p-6 flex flex-col gap-6 max-w-[1600px] xl:max-w-[1920px] 2xl:max-w-[2200px] mx-auto w-full min-w-0">
-      <OverrideQueue />
       <StatsCards filterProductionLineId={selectedLineId} />
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 min-w-0">
         <GanttChart maxRows={4} filterProductionLineId={selectedLineId} />

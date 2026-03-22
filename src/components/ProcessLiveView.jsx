@@ -19,9 +19,11 @@ import { getProductionStatus } from '../utils/productionStatus';
 import { buildProcessLiveStepperSteps } from '../utils/processLiveStepper';
 import { getRowProcessWindowMs, getLiveStepperState } from '../utils/processLiveWindow';
 import { pickSpotlightBatchRow } from '../utils/processLiveSpotlight';
+import { SUPERVISOR_REQUEST_BUTTON_CLASS } from '../constants/supervisorRequests';
 import ProcessProfileStepper from './ProcessProfileStepper';
 import ProcessLiveCurrentBatchCard from './ProcessLiveCurrentBatchCard';
 import ProcessLiveSupervisorDialog from './ProcessLiveSupervisorDialog';
+import SupervisorRequestsPanel from './SupervisorRequestsPanel';
 
 const TICK_MS = 10_000;
 
@@ -147,6 +149,10 @@ export default function ProcessLiveView() {
     setSupervisorOpen(true);
   }, []);
 
+  const notifySupervisorListRefresh = useCallback(() => {
+    window.dispatchEvent(new CustomEvent('loaf-supervisor-requests-refresh'));
+  }, []);
+
   const clearHoverTimer = useCallback(() => {
     if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
     hoverTimeoutRef.current = null;
@@ -199,7 +205,8 @@ export default function ProcessLiveView() {
   }
 
   return (
-    <div className="min-h-screen bg-surface flex flex-col text-gray-800">
+    <div className="min-h-screen bg-surface flex flex-col text-gray-800 relative">
+      <SupervisorRequestsPanel lineId={lineId} processId={processId} />
       <header className="shrink-0 bg-primary text-white shadow-card px-3 py-2.5 sm:px-4 sm:py-3 md:px-6">
         <div className="mx-auto flex w-full max-w-[2500px] flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex min-w-0 flex-wrap items-center gap-2 sm:gap-3">
@@ -239,16 +246,16 @@ export default function ProcessLiveView() {
                 <strong className="font-semibold text-gray-900">Supervisor</strong> — this screen is only for{' '}
                 <strong className="font-semibold text-gray-900">{processLabel}</strong> on{' '}
                 <strong className="font-semibold text-gray-900">{line?.name || lineId}</strong>. Use{' '}
-                <strong className="font-semibold">Request</strong> to ask admins (Dashboard / Scheduling) to reorder,
-                edit, delete, or adjust time blockers.
+                <strong className="font-semibold">Request</strong> for batch updates, reorder, add/delete, time blockers,
+                etc. Row actions use the same request form for that row.
               </p>
               <button
                 type="button"
                 onClick={() => openSupervisor(null)}
-                className="inline-flex items-center justify-center gap-2 shrink-0 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-800 hover:bg-gray-50"
+                className={SUPERVISOR_REQUEST_BUTTON_CLASS}
               >
-                <ClipboardList className="h-4 w-4" />
-                Request (no row)
+                <ClipboardList className="h-4 w-4 shrink-0" aria-hidden />
+                Request
               </button>
             </div>
 
@@ -381,14 +388,15 @@ export default function ProcessLiveView() {
                                     className="px-2 py-2.5 sm:px-3 sm:py-3"
                                     onClick={(e) => e.stopPropagation()}
                                   >
-                                    <button
-                                      type="button"
-                                      data-supervisor-action="true"
-                                      onClick={() => openSupervisor(row)}
-                                      className="rounded-lg border border-primary/40 bg-primary/5 px-2 py-1 text-xs font-semibold text-primary hover:bg-primary/10 sm:text-sm"
-                                    >
-                                      Request
-                                    </button>
+                                      <button
+                                        type="button"
+                                        data-supervisor-action="true"
+                                        onClick={() => openSupervisor(row)}
+                                        className={SUPERVISOR_REQUEST_BUTTON_CLASS}
+                                      >
+                                        <ClipboardList className="h-3.5 w-3.5 shrink-0 sm:h-4 sm:w-4" aria-hidden />
+                                        Request
+                                      </button>
                                   </td>
                                   <td className="px-2 py-2.5 sm:px-3 sm:py-3">
                                     <span
@@ -476,6 +484,7 @@ export default function ProcessLiveView() {
           processId={processId}
           processName={processMeta?.name}
           row={supervisorRow}
+          onSubmitted={notifySupervisorListRefresh}
         />
       </main>
     </div>
