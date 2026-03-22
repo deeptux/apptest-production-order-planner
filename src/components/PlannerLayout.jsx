@@ -63,6 +63,7 @@ export default function PlannerLayout() {
         </div>
       )}
       <Topbar onMenuClick={() => setSidebarOpen((o) => !o)} />
+      {/* Review modal + bell listener (pending list is in Topbar only) */}
       <AdminRequestsNotificationBar />
       <SidebarDrawer
         open={sidebarOpen}

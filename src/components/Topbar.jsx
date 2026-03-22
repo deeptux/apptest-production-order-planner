@@ -1,15 +1,71 @@
-import { Bell, Settings, User, LogOut, Menu } from 'lucide-react';
+import { Bell, Settings, User, LogOut, Menu, Clock, MapPin, ChevronRight } from 'lucide-react';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { isSupabaseConfigured } from '../lib/supabase';
 import { useOverrideRequests } from '../context/OverrideRequestsContext';
+import {
+  formatSupervisorRequestSummary,
+  getSupervisorBellCardMeta,
+  OPEN_ADMIN_SUPERVISOR_REVIEW_EVENT,
+} from '../constants/supervisorRequests';
+
+function BellRequestCard({ req, onOpen }) {
+  const summary = formatSupervisorRequestSummary(req);
+  const { when, where } = getSupervisorBellCardMeta(req);
+
+  return (
+    <DropdownMenu.Item
+      className="group cursor-pointer mx-1.5 mb-2 last:mb-1 rounded-xl border border-gray-200/90 bg-gradient-to-b from-white to-gray-50/90 px-0 py-0 text-left shadow-sm outline-none transition-all data-[highlighted]:border-primary/35 data-[highlighted]:from-amber-50/90 data-[highlighted]:to-amber-50/50 data-[highlighted]:shadow-md data-[highlighted]:ring-1 data-[highlighted]:ring-primary/15 data-[state=open]:shadow-md"
+      onSelect={(e) => {
+        e.preventDefault();
+        onOpen(req);
+      }}
+    >
+      <div className="px-3 pt-2.5 pb-2">
+        <div className="flex items-start justify-between gap-2">
+          <p className="text-[13px] font-semibold leading-snug text-gray-900 line-clamp-2 min-w-0">{summary}</p>
+          <ChevronRight
+            className="h-4 w-4 shrink-0 text-gray-300 transition-colors group-data-[highlighted]:text-primary mt-0.5"
+            aria-hidden
+          />
+        </div>
+        {(when || where) ? (
+          <div className="mt-2.5 space-y-1.5 border-t border-gray-100/90 pt-2.5">
+            {when ? (
+              <div className="flex items-start gap-2 min-w-0">
+                <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-gray-100 text-gray-500">
+                  <Clock className="h-3 w-3" aria-hidden />
+                </span>
+                <p className="min-w-0 text-[12px] leading-snug text-gray-600 pt-0.5">
+                  <span className="text-[10px] font-semibold uppercase tracking-wide text-gray-400">Submitted:</span>{' '}
+                  <span className="text-gray-700">{when}</span>
+                </p>
+              </div>
+            ) : null}
+            {where ? (
+              <div className="flex items-start gap-2 min-w-0">
+                <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-gray-100 text-gray-500">
+                  <MapPin className="h-3 w-3" aria-hidden />
+                </span>
+                <p className="min-w-0 text-[12px] leading-snug text-gray-600 pt-0.5">
+                  <span className="text-[10px] font-semibold uppercase tracking-wide text-gray-400">Where:</span>{' '}
+                  <span className="text-gray-700">{where}</span>
+                </p>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+    </DropdownMenu.Item>
+  );
+}
 
 export default function Topbar({ onMenuClick }) {
   const { pending, isLocalOnlyQueue } = useOverrideRequests();
   const db = isSupabaseConfigured();
   const pendingCount = pending.length;
 
-  const scrollToSupervisorStrip = () => {
-    document.getElementById('planner-supervisor-requests')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  const openReviewFromBell = (req) => {
+    window.dispatchEvent(new CustomEvent(OPEN_ADMIN_SUPERVISOR_REVIEW_EVENT, { detail: { request: req } }));
   };
 
   return (
@@ -41,7 +97,7 @@ export default function Topbar({ onMenuClick }) {
               className="relative p-2 rounded-lg hover:bg-white/10 transition-colors"
               aria-label={
                 pendingCount
-                  ? `Supervisor requests, ${pendingCount} pending${isLocalOnlyQueue ? ', this device' : ''}`
+                  ? `Supervisor requests, ${pendingCount} pending${isLocalOnlyQueue ? ', this browser' : ''}`
                   : 'Supervisor requests'
               }
             >
@@ -62,47 +118,26 @@ export default function Topbar({ onMenuClick }) {
           </DropdownMenu.Trigger>
           <DropdownMenu.Portal>
             <DropdownMenu.Content
-              className="z-[100] min-w-[220px] max-w-[min(100vw-2rem,20rem)] rounded-lg border border-gray-200 bg-white p-2.5 text-sm text-gray-800 shadow-lg"
+              className="z-[100] flex w-[min(100vw-1rem,26rem)] max-w-[26rem] max-h-[min(75vh,24rem)] flex-col overflow-hidden rounded-xl border border-gray-200/95 bg-gray-50/80 py-2 text-sm text-gray-800 shadow-xl"
               sideOffset={6}
               align="end"
             >
-              <p className="font-semibold text-gray-900 mb-1.5 text-[13px]">Supervisor requests</p>
-              {db ? (
-                pendingCount === 0 ? (
-                  <p className="text-muted text-[13px] leading-snug">None pending.</p>
+              <div className="shrink-0 px-3 pb-2 border-b border-gray-200/80 bg-white/60">
+                <p className="font-semibold text-gray-900 text-[14px] tracking-tight">Supervisor requests</p>
+                {pendingCount === 0 ? (
+                  <p className="text-muted text-[12px] mt-1 leading-snug">None pending.</p>
                 ) : (
-                  <>
-                    <p className="text-gray-800 text-[13px] mb-1.5">
-                      <strong>{pendingCount}</strong> pending — see amber bar under the header.
-                    </p>
-                    <DropdownMenu.Item
-                      className="w-full text-left rounded-md px-2 py-1.5 text-[13px] font-medium text-primary hover:bg-primary/10 outline-none cursor-pointer"
-                      onSelect={(e) => {
-                        e.preventDefault();
-                        scrollToSupervisorStrip();
-                      }}
-                    >
-                      Jump to list
-                    </DropdownMenu.Item>
-                  </>
-                )
-              ) : pendingCount === 0 ? (
-                <p className="text-muted text-[13px] leading-snug">None pending on this device.</p>
-              ) : (
-                <>
-                  <p className="text-gray-800 text-[13px] mb-1.5">
-                    <strong>{pendingCount}</strong> pending (this device).
+                  <p className="text-[12px] text-gray-600 mt-1 leading-snug">
+                    <strong className="text-gray-800">{pendingCount}</strong> pending. Select a card to review.
                   </p>
-                  <DropdownMenu.Item
-                    className="w-full text-left rounded-md px-2 py-1.5 text-[13px] font-medium text-primary hover:bg-primary/10 outline-none cursor-pointer"
-                    onSelect={(e) => {
-                      e.preventDefault();
-                      scrollToSupervisorStrip();
-                    }}
-                  >
-                    Jump to list
-                  </DropdownMenu.Item>
-                </>
+                )}
+              </div>
+              {pendingCount > 0 && (
+                <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-1 pt-2 pb-1">
+                  {pending.map((req) => (
+                    <BellRequestCard key={req.id} req={req} onOpen={openReviewFromBell} />
+                  ))}
+                </div>
               )}
             </DropdownMenu.Content>
           </DropdownMenu.Portal>
