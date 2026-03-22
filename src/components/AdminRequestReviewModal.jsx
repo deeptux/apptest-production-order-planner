@@ -134,6 +134,24 @@ export default function AdminRequestReviewModal({ open, onOpenChange, request, o
                 </dd>
               </div>
             )}
+            {p.viewSource && (
+              <div>
+                <dt className="text-xs font-medium text-gray-500 uppercase tracking-wide">Opened from</dt>
+                <dd className="text-gray-800 capitalize">{p.viewSource}</dd>
+              </div>
+            )}
+            {p.skuBatchOrder != null && String(p.skuBatchOrder).trim() !== '' && (
+              <div>
+                <dt className="text-xs font-medium text-gray-500 uppercase tracking-wide">SKU batch order</dt>
+                <dd className="text-gray-800">{p.skuBatchOrder}</dd>
+              </div>
+            )}
+            {p.orderBatch != null && String(p.orderBatch).trim() !== '' && (
+              <div>
+                <dt className="text-xs font-medium text-gray-500 uppercase tracking-wide">Order batch</dt>
+                <dd className="text-gray-800">{p.orderBatch}</dd>
+              </div>
+            )}
             {p.note && (
               <div>
                 <dt className="text-xs font-medium text-gray-500 uppercase tracking-wide">Details</dt>

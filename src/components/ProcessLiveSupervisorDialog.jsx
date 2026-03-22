@@ -56,6 +56,12 @@ export default function ProcessLiveSupervisorDialog({
   processId,
   processName,
   row,
+  /** 'general' = toolbar only (describe for admin). 'batch' = row actions + batch context. */
+  requestScope = 'batch',
+  /** Where the request was opened from (stored on payload for admins). */
+  viewSource = 'live',
+  skuBatchOrder = null,
+  orderBatch = null,
   onSubmitted,
 }) {
   const [action, setAction] = useState('supervisor_general');
@@ -64,7 +70,12 @@ export default function ProcessLiveSupervisorDialog({
   const [done, setDone] = useState(false);
   const [err, setErr] = useState('');
 
+  const isGeneralScope = requestScope === 'general';
+
   const options = useMemo(() => {
+    if (isGeneralScope) {
+      return ACTION_DEFS.filter((def) => def.value === 'supervisor_general');
+    }
     return ACTION_DEFS.filter((def) => {
       if (!def.needsRow) return true;
       if (!row) return false;
@@ -72,7 +83,7 @@ export default function ProcessLiveSupervisorDialog({
       if (def.notBreak && row.isBreak) return false;
       return true;
     });
-  }, [row]);
+  }, [row, isGeneralScope]);
 
   useEffect(() => {
     if (!open) return;
@@ -96,10 +107,13 @@ export default function ProcessLiveSupervisorDialog({
     }
 
     const supervisorClientId = getSupervisorClientId();
-    const requestedByLabel = `Supervisor · ${lineName || lineId} · ${processName || processId}`;
+    const viewLabel = viewSource === 'dashboard' ? 'Dashboard' : 'Live';
+    const requestedByLabel = `Supervisor · ${viewLabel} · ${lineName || lineId} · ${processName || processId}`;
 
     const payload = {
       kind: action,
+      requestScope: isGeneralScope ? 'general' : 'batch',
+      viewSource,
       productionLineId: lineId,
       lineName: lineName || lineId,
       processId,
@@ -109,6 +123,12 @@ export default function ProcessLiveSupervisorDialog({
       product: row?.product ?? null,
       isBreak: Boolean(row?.isBreak),
       supervisorClientId,
+      ...(isGeneralScope
+        ? {}
+        : {
+            skuBatchOrder: row?.isBreak ? null : skuBatchOrder ?? null,
+            orderBatch: row?.isBreak ? null : orderBatch ?? null,
+          }),
     };
 
     if (!isSupabaseConfigured()) {
@@ -149,39 +169,76 @@ export default function ProcessLiveSupervisorDialog({
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 bg-black/50 z-[120]" />
         <Dialog.Content className="fixed left-1/2 top-1/2 z-[121] w-full max-w-md -translate-x-1/2 -translate-y-1/2 rounded-lg border border-gray-200 bg-white p-4 shadow-lg max-h-[90vh] overflow-y-auto">
-          <Dialog.Title className="text-lg font-semibold text-gray-900">Request change from admin</Dialog.Title>
+          <Dialog.Title className="text-lg font-semibold text-gray-900">
+            {isGeneralScope ? 'General request to admin' : 'Batch / row request'}
+          </Dialog.Title>
           <Dialog.Description className="text-sm text-muted mt-1">
-            Choose what you need. Row-specific requests are also available from the <strong>Request</strong> button on
-            each batch or time blocker. Admins see pending items in the planner notification bar and acknowledge them
-            there.
+            {isGeneralScope ? (
+              <>
+                For line-wide or process-wide questions that are <strong>not</strong> tied to one table row. For a
+                specific batch/time blocker, use <strong>Request</strong> on row.
+              </>
+            ) : (
+              <>
+                This request is tied to the batch or blocker below. Pick a request type and add details. Admins see
+                pending items in the planner bar.
+              </>
+            )}
           </Dialog.Description>
-          {!isSupabaseConfigured() && (
-            <p className="mt-2 text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1.5">
-              Saved on this device only — see <strong>My requests</strong>. Admins on other machines won&apos;t see it
-              until shared sync is on.
-            </p>
+          {!isGeneralScope && row && (
+            <div className="mt-3 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm text-gray-800 space-y-1">
+              <div>
+                <span className="font-semibold text-gray-600">Line · process:</span>{' '}
+                {lineName || lineId} — {processName || processId}
+              </div>
+              {row.isBreak ? (
+                <div>
+                  <span className="font-semibold text-gray-600">Row:</span> Time blocker
+                </div>
+              ) : (
+                <>
+                  {row.product && (
+                    <div>
+                      <span className="font-semibold text-gray-600">Product:</span> {row.product}
+                    </div>
+                  )}
+                  {skuBatchOrder != null && String(skuBatchOrder).trim() !== '' && (
+                    <div>
+                      <span className="font-semibold text-gray-600">SKU batch order:</span> {skuBatchOrder}
+                    </div>
+                  )}
+                  {orderBatch != null && String(orderBatch).trim() !== '' && (
+                    <div>
+                      <span className="font-semibold text-gray-600">Order batch:</span> {orderBatch}
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
           )}
           {done ? (
             <p className="mt-4 text-sm font-medium text-green-800">Request saved.</p>
           ) : (
             <form onSubmit={handleSubmit} className="mt-4 space-y-3">
-              <div>
-                <label htmlFor="pl-supervisor-action" className="block text-xs font-medium text-gray-600 mb-1">
-                  Request type
-                </label>
-                <select
-                  id="pl-supervisor-action"
-                  value={action}
-                  onChange={(e) => setAction(e.target.value)}
-                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 bg-white"
-                >
-                  {options.map((o) => (
-                    <option key={o.value} value={o.value}>
-                      {o.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
+              {!isGeneralScope && (
+                <div>
+                  <label htmlFor="pl-supervisor-action" className="block text-xs font-medium text-gray-600 mb-1">
+                    Request type
+                  </label>
+                  <select
+                    id="pl-supervisor-action"
+                    value={action}
+                    onChange={(e) => setAction(e.target.value)}
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 bg-white"
+                  >
+                    {options.map((o) => (
+                      <option key={o.value} value={o.value}>
+                        {o.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
               <div>
                 <label htmlFor="pl-supervisor-note" className="block text-xs font-medium text-gray-600 mb-1">
                   Details for admin

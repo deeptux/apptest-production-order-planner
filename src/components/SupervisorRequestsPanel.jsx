@@ -147,7 +147,8 @@ export default function SupervisorRequestsPanel({ lineId, processId }) {
             <div className="flex-1 min-h-0 overflow-y-auto bg-surface px-2 py-2">
               {items.length === 0 ? (
                 <p className="text-sm text-muted px-2 py-6 text-center">
-                  No requests yet. Use <strong className="text-gray-700">Request</strong> above or on a row.
+                  No requests yet. Use <strong className="text-gray-700">General request</strong> or row{' '}
+                  <strong className="text-gray-700">Request</strong>.
                 </p>
               ) : (
                 <ul className="flex flex-col gap-2">

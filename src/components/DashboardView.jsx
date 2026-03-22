@@ -7,13 +7,24 @@ import SectionTabs from './SectionTabs';
 import PlanTable from './PlanTable';
 import GanttChart from './GanttChart';
 import { OutputByProductChart } from './OutputByProductChart';
+import ProcessLiveSupervisorDialog from './ProcessLiveSupervisorDialog';
 import { DEMO_APP_NOTICE_TITLE, DEMO_APP_NOTICE_BODY } from '../constants/demoNotice';
 import { useLinesList } from '../hooks/useConfigStores';
+
+const initialSupervisorDialog = {
+  open: false,
+  row: null,
+  processId: '',
+  processName: '',
+  skuBatchOrder: null,
+  orderBatch: null,
+};
 
 export default function DashboardView() {
   const navigate = useNavigate();
   const [demoModalOpen, setDemoModalOpen] = useState(false);
   const [demoModalMessage, setDemoModalMessage] = useState('');
+  const [supervisorDialog, setSupervisorDialog] = useState(initialSupervisorDialog);
 
   // Same-tab edits, other tabs (storage → hydrate in PlanSync), and Supabase Realtime all bump the lines store.
   const lines = useLinesList();
@@ -100,30 +111,81 @@ export default function DashboardView() {
             <strong className="text-gray-800">Production</strong>.
           </div>
         ) : (
-          <SectionTabs value={section} onValueChange={setSection} sections={tabSections}>
-            {sortedProcesses.map((sec) => (
-              <Tabs.Content key={sec.id} value={sec.id}>
-                <PlanTable
-                  sectionId={sec.id}
-                  sortedProcesses={sortedProcesses}
-                  filterProductionLineId={selectedLineId}
-                  scheduleAlignedDisplay
-                  sortRowsByScheduleStart
-                  statusColumnLabel="Status"
-                  onAddBatch={() => navigate('/scheduling')}
-                  addButtonLabel="See All Schedules"
-                  onExport={() => openDemoModal(DEMO_APP_NOTICE_BODY)}
-                  onExportPdf={() => openDemoModal(DEMO_APP_NOTICE_BODY)}
-                  onLiveView={() =>
-                    navigate(
-                      `/live/line/${encodeURIComponent(selectedLineId)}/process/${encodeURIComponent(sec.id)}`,
-                    )
-                  }
-                  maxRows={4}
-                />
-              </Tabs.Content>
-            ))}
-          </SectionTabs>
+          <>
+            <p className="text-xs sm:text-sm text-gray-600 -mt-1 mb-1">
+              <strong className="text-gray-800">Supervisor:</strong> use <strong>General request</strong> in the table
+              footer for line/process-wide notes. Use row <strong>Request</strong> to attach a specific batch or time
+              blocker (includes process tab and SKU batch order).
+            </p>
+            <SectionTabs value={section} onValueChange={setSection} sections={tabSections}>
+              {sortedProcesses.map((sec) => (
+                <Tabs.Content key={sec.id} value={sec.id}>
+                  <PlanTable
+                    sectionId={sec.id}
+                    sortedProcesses={sortedProcesses}
+                    filterProductionLineId={selectedLineId}
+                    scheduleAlignedDisplay
+                    sortRowsByScheduleStart
+                    statusColumnLabel="Status"
+                    onAddBatch={() => navigate('/scheduling')}
+                    addButtonLabel="See All Schedules"
+                    onExport={() => openDemoModal(DEMO_APP_NOTICE_BODY)}
+                    onExportPdf={() => openDemoModal(DEMO_APP_NOTICE_BODY)}
+                    onLiveView={() =>
+                      navigate(
+                        `/live/line/${encodeURIComponent(selectedLineId)}/process/${encodeURIComponent(sec.id)}`,
+                      )
+                    }
+                    onSupervisorRequestGeneral={() =>
+                      setSupervisorDialog({
+                        open: true,
+                        row: null,
+                        processId: sec.id,
+                        processName: sec.name || sec.id,
+                        skuBatchOrder: null,
+                        orderBatch: null,
+                      })
+                    }
+                    onSupervisorRequestRow={({ row, skuBatchOrder, orderBatch }) =>
+                      setSupervisorDialog({
+                        open: true,
+                        row,
+                        processId: sec.id,
+                        processName: sec.name || sec.id,
+                        skuBatchOrder,
+                        orderBatch,
+                      })
+                    }
+                    maxRows={4}
+                  />
+                </Tabs.Content>
+              ))}
+            </SectionTabs>
+            <ProcessLiveSupervisorDialog
+              open={supervisorDialog.open}
+              onOpenChange={(open) =>
+                setSupervisorDialog((s) => ({
+                  ...s,
+                  open,
+                  ...(open
+                    ? {}
+                    : { row: null, skuBatchOrder: null, orderBatch: null }),
+                }))
+              }
+              lineId={selectedLineId}
+              lineName={selectedLine?.name}
+              processId={supervisorDialog.processId}
+              processName={supervisorDialog.processName}
+              row={supervisorDialog.row}
+              requestScope={supervisorDialog.row ? 'batch' : 'general'}
+              viewSource="dashboard"
+              skuBatchOrder={supervisorDialog.skuBatchOrder}
+              orderBatch={supervisorDialog.orderBatch}
+              onSubmitted={() => {
+                window.dispatchEvent(new CustomEvent('loaf-supervisor-requests-refresh'));
+              }}
+            />
+          </>
         )}
       </section>
 

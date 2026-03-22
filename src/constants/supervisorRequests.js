@@ -30,6 +30,9 @@ export function formatSupervisorRequestSummary(row) {
   const parts = [kindLabel];
   if (station) parts.push(`· ${station}`);
   if (product) parts.push(`· ${product}`);
+  if (p.skuBatchOrder && String(p.skuBatchOrder).trim()) {
+    parts.push(`(${String(p.skuBatchOrder).trim()})`);
+  }
   return parts.join(' ');
 }
 

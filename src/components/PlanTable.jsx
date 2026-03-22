@@ -1,4 +1,4 @@
-import { Plus, ArrowUpDown, Download, FileText, Eye, Trash2 } from 'lucide-react';
+import { Plus, ArrowUpDown, Download, FileText, Eye, Trash2, ClipboardList } from 'lucide-react';
 import { useMemo, useState, useEffect } from 'react';
 import { usePlan } from '../context/PlanContext';
 import { getOrderBatchAndLineBatch } from '../store/planStore';
@@ -23,6 +23,7 @@ import {
   schedulingTimeStackFromRowHm,
 } from '../utils/planDisplay';
 import { SECTIONS } from './SectionTabs';
+import { SUPERVISOR_REQUEST_BUTTON_CLASS } from '../constants/supervisorRequests';
 
 // shared table: live station + dashboard. dashboard turns on scheduleAlignedDisplay so the time cells
 // and SKU batch labels line up with what scheduling shows (12h + day line, sku map, etc.)
@@ -118,6 +119,12 @@ export default function PlanTable({
   onExport,
   onExportPdf,
   onLiveView,
+  /** Dashboard: open supervisor dialog (general — not tied to one row). */
+  onSupervisorRequestGeneral,
+  /**
+   * Dashboard: open batch-scoped supervisor dialog. Receives { row, skuBatchOrder, orderBatch }.
+   */
+  onSupervisorRequestRow,
   maxRows,
   statusColumnLabel = 'Production Status',
   sortedProcesses,
@@ -161,6 +168,7 @@ export default function PlanTable({
   const restColumns = baseColumns.filter((c) => c.key !== 'productionStatus');
   const columns = [
     { key: 'productionStatus', label: statusColumnLabel },
+    ...(onSupervisorRequestRow ? [{ key: 'supervisorRequest', label: 'Request' }] : []),
     ...(onDeleteBatch ? [{ key: 'actions', label: 'Actions' }] : []),
     ...restColumns,
   ];
@@ -173,7 +181,7 @@ export default function PlanTable({
 
   const { orderBatch: orderBatchMap, lineBatch: lineBatchMapLegacy } = useMemo(
     () => getOrderBatchAndLineBatch(fullRows),
-    [fullRows]
+    [fullRows],
   );
   const skuBatchOrderMap = useMemo(() => buildSkuBatchOrderMap(fullRows), [fullRows]);
 
@@ -237,6 +245,27 @@ export default function PlanTable({
               return (
                 <tr key={row.id} className="border-b border-gray-100 hover:bg-gray-50/50 bg-surface-card">
                   {columns.map(({ key }) => {
+                    if (key === 'supervisorRequest') {
+                      return (
+                        <td key={key} className="py-2 sm:py-2.5 px-3 sm:px-4 whitespace-nowrap">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              onSupervisorRequestRow?.({
+                                row,
+                                skuBatchOrder: row.isBreak ? null : skuBatchOrderMap[row.id] ?? null,
+                                orderBatch: row.isBreak ? null : orderBatchMap[row.id] ?? null,
+                              })
+                            }
+                            className={SUPERVISOR_REQUEST_BUTTON_CLASS}
+                            aria-label="Supervisor request for this batch or time blocker"
+                          >
+                            <ClipboardList className="h-3.5 w-3.5 shrink-0 sm:h-4 sm:h-4" aria-hidden />
+                            Request
+                          </button>
+                        </td>
+                      );
+                    }
                     if (key === 'actions') {
                       return (
                         <td key={key} className="py-2 sm:py-2.5 px-3 sm:px-4">
@@ -386,8 +415,19 @@ export default function PlanTable({
             </button>
           )}
         </div>
-        {(onReorder || onExport || onExportPdf || onLiveView) && (
+        {(onReorder || onExport || onExportPdf || onLiveView || onSupervisorRequestGeneral) && (
           <div className="flex items-center flex-wrap gap-2 sm:gap-3 ml-auto">
+            {onSupervisorRequestGeneral && (
+              <button
+                type="button"
+                onClick={() => onSupervisorRequestGeneral()}
+                className={SUPERVISOR_REQUEST_BUTTON_CLASS}
+                aria-label="General supervisor request for this line and process tab"
+              >
+                <ClipboardList className="w-4 h-4 shrink-0" aria-hidden />
+                General request
+              </button>
+            )}
             {onReorder && (
               <button
                 type="button"

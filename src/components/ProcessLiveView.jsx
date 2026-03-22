@@ -247,16 +247,18 @@ export default function ProcessLiveView() {
                 <strong className="font-semibold text-gray-900">Supervisor</strong> — this screen is only for{' '}
                 <strong className="font-semibold text-gray-900">{processLabel}</strong> on{' '}
                 <strong className="font-semibold text-gray-900">{line?.name || lineId}</strong>. Use{' '}
-                <strong className="font-semibold">Request</strong> for batch updates, reorder, add/delete, time blockers,
-                etc. Row actions use the same request form for that row.
+                <strong className="font-semibold">General request</strong> for line/process-wide questions. Use{' '}
+                <strong className="font-semibold">Request</strong> on a table row to attach that batch or time blocker
+                (SKU batch order and process are included automatically).
               </p>
               <button
                 type="button"
                 onClick={() => openSupervisor(null)}
                 className={SUPERVISOR_REQUEST_BUTTON_CLASS}
+                aria-label="General supervisor request (not tied to one row)"
               >
                 <ClipboardList className="h-4 w-4 shrink-0" aria-hidden />
-                Request
+                General request
               </button>
             </div>
 
@@ -485,6 +487,14 @@ export default function ProcessLiveView() {
           processId={processId}
           processName={processMeta?.name}
           row={supervisorRow}
+          requestScope={supervisorRow ? 'batch' : 'general'}
+          viewSource="live"
+          skuBatchOrder={
+            supervisorRow && !supervisorRow.isBreak ? skuBatchOrderMap[supervisorRow.id] ?? null : null
+          }
+          orderBatch={
+            supervisorRow && !supervisorRow.isBreak ? orderBatchMap[supervisorRow.id] ?? null : null
+          }
           onSubmitted={notifySupervisorListRefresh}
         />
       </main>
