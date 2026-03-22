@@ -1,24 +1,11 @@
 import { Package, TrendingUp, Calendar, Clock, Flag } from 'lucide-react';
 import { usePlan } from '../context/PlanContext';
 import { parseTimeToMinutes } from '../utils/stageDurations';
+import { formatDateRelativeScheduling, formatTime12h } from '../utils/planDisplay';
 
 function formatDate(d) {
   if (!d || !(d instanceof Date)) return '—';
   return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
-}
-
-function formatTime(str) {
-  if (!str) return '—';
-  return str;
-}
-
-function formatDateStr(dateStr) {
-  if (!dateStr || typeof dateStr !== 'string') return '—';
-  const [y, m, d] = dateStr.split('-').map(Number);
-  if (!y || !m || !d) return '—';
-  const dt = new Date(y, m - 1, d);
-  if (Number.isNaN(dt.getTime())) return '—';
-  return dt.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
 }
 
 function nextDay(dateStr) {
@@ -48,7 +35,6 @@ export default function StatsCards({ filterProductionLineId }) {
     return parseTimeToMinutes(a.startSponge) - parseTimeToMinutes(b.startSponge);
   });
   const firstStartRow = sortedByStart.length ? sortedByStart[0] : null;
-  const firstStart = firstStartRow ? `${formatDateStr(firstStartRow.date)} ${formatTime(firstStartRow.startSponge)}` : '—';
   const withEnd = filteredRows.map((r) => {
     const startM = parseTimeToMinutes(r.startSponge);
     const endM = parseTimeToMinutes(r.endBatch);
@@ -61,19 +47,45 @@ export default function StatsCards({ filterProductionLineId }) {
     return parseTimeToMinutes(a.endBatch) - parseTimeToMinutes(b.endBatch);
   });
   const lastEndEntry = sortedByEnd.length ? sortedByEnd[sortedByEnd.length - 1] : null;
-  const lastEnd = lastEndEntry ? `${formatDateStr(lastEndEntry.endDate)} ${formatTime(lastEndEntry.endBatch)}` : '—';
+
+  // same stack idea as schedule time cells: big 12h line, muted Today/Tomorrow/Mar 24 line under
+  const dateTimeStack = (timeHm, dateYmd) => {
+    const ymd = (dateYmd || '').split('T')[0];
+    const timeLine = timeHm ? formatTime12h(String(timeHm).trim()) : '—';
+    const sub = ymd ? formatDateRelativeScheduling(ymd) : '—';
+    return (
+      <div className="leading-tight min-w-0">
+        <div className="font-bold text-gray-900 tabular-nums text-xl sm:text-2xl md:text-[1.65rem] xl:text-[1.85rem] 2xl:text-[2rem] tracking-tight">
+          {timeLine}
+        </div>
+        <div className="text-[0.65rem] sm:text-xs text-gray-500 mt-1">{sub}</div>
+      </div>
+    );
+  };
 
   const cards = [
     { label: 'Total Batches', value: totalBatches, icon: Package },
-    { label: 'Total Output (pkg)', value: `${totalOutput.toLocaleString()} pkg`, icon: TrendingUp },
+    { label: 'Total Output (PKG)', value: totalOutput.toLocaleString(), icon: TrendingUp },
     { label: 'Plan Date', value: formatDate(planDate), icon: Calendar },
-    { label: 'First Start', value: formatTime(firstStart), icon: Clock },
-    { label: 'Last End', value: formatTime(lastEnd), icon: Flag },
+    {
+      label: 'First Start',
+      icon: Clock,
+      valueNode: firstStartRow
+        ? dateTimeStack(firstStartRow.startSponge, firstStartRow.date)
+        : dateTimeStack(null, null),
+    },
+    {
+      label: 'Last End',
+      icon: Flag,
+      valueNode: lastEndEntry
+        ? dateTimeStack(lastEndEntry.endBatch, lastEndEntry.endDate)
+        : dateTimeStack(null, null),
+    },
   ];
 
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-3 xl:grid-cols-5 gap-4 w-full">
-      {cards.map(({ label, value, icon: Icon }) => {
+      {cards.map(({ label, value, valueNode, icon: Icon }) => {
         const truncateLabel = shouldTruncateLabel(label);
         return (
           <div
@@ -91,9 +103,13 @@ export default function StatsCards({ filterProductionLineId }) {
               >
                 {label}
               </p>
-              <p className="text-kpi-value sm:text-sm-kpi-value md:text-md-kpi-value lg:text-md-kpi-value xl:text-lg-kpi-value 2xl:text-[2rem] text-gray-900 leading-tight break-words whitespace-normal sm:whitespace-nowrap">
-                {value}
-              </p>
+              {valueNode != null ? (
+                <div className="mt-0.5">{valueNode}</div>
+              ) : (
+                <p className="text-kpi-value sm:text-sm-kpi-value md:text-md-kpi-value lg:text-md-kpi-value xl:text-lg-kpi-value 2xl:text-[2rem] text-gray-900 leading-tight break-words whitespace-normal sm:whitespace-nowrap">
+                  {value}
+                </p>
+              )}
             </div>
           </div>
         );

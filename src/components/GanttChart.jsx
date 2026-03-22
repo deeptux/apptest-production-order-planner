@@ -1,12 +1,20 @@
 import { useMemo, useState, useEffect } from 'react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
 import { usePlan } from '../context/PlanContext';
+import { formatTime12h } from '../utils/planDisplay';
 import {
   DAY_MINUTES,
   parseTimeToMinutes,
   computeTotalMinutesForRow,
   computeStageDurationsForRow,
 } from '../utils/stageDurations';
+
+function absMinutesToHHMM(abs) {
+  const t = ((abs % DAY_MINUTES) + DAY_MINUTES) % DAY_MINUTES;
+  const h = Math.floor(t / 60) % 24;
+  const m = Math.round(t % 60);
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+}
 
 const STAGE_COLORS = {
   mixing: '#3b82f6',
@@ -97,16 +105,15 @@ export default function GanttChart({ maxRows, filterProductionLineId }) {
     const domainMax = maxAbs - minAbs;
     const minBase = minAbs;
 
+    // subtitle range: weekday + 12h clock (match stats / scheduling)
     const formatLabel = (absMinutes) => {
       const date = new Date(baseDate);
       const baseDay = Math.floor(minAbs / DAY_MINUTES);
       const dayOffset = Math.floor(absMinutes / DAY_MINUTES) - baseDay;
       date.setDate(date.getDate() + dayOffset);
       const dayName = date.toLocaleDateString(undefined, { weekday: 'short' });
-      const t = absMinutes % DAY_MINUTES;
-      const h = Math.floor(t / 60) % 24;
-      const m = Math.round(t % 60);
-      return `${dayName} ${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+      const hhmm = absMinutesToHHMM(absMinutes);
+      return `${dayName} ${formatTime12h(hhmm)}`;
     };
 
     const startLabel = formatLabel(minAbs);
@@ -124,10 +131,7 @@ export default function GanttChart({ maxRows, filterProductionLineId }) {
 
   const formatTimeTick = (v) => {
     const abs = minBase + v;
-    const t = abs % DAY_MINUTES;
-    const h = Math.floor(t / 60) % 24;
-    const m = Math.round(t % 60);
-    return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+    return formatTime12h(absMinutesToHHMM(abs));
   };
 
   return (
