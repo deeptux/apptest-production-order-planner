@@ -40,6 +40,7 @@ export default function AdminRequestReviewModal({ open, onOpenChange, request, o
     setBusy(false);
     if (res.ok) {
       onDecided?.();
+      window.dispatchEvent(new CustomEvent('loaf-supervisor-requests-refresh'));
       onOpenChange(false);
     } else {
       setErr('Could not approve. Try again.');
@@ -65,6 +66,7 @@ export default function AdminRequestReviewModal({ open, onOpenChange, request, o
     setBusy(false);
     if (res.ok) {
       onDecided?.();
+      window.dispatchEvent(new CustomEvent('loaf-supervisor-requests-refresh'));
       onOpenChange(false);
     } else {
       setErr('Could not reject. Try again.');
