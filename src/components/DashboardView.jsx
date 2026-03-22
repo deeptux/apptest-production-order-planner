@@ -19,7 +19,8 @@ export default function DashboardView() {
   // Same-tab edits, other tabs (storage → hydrate in PlanSync), and Supabase Realtime all bump the lines store.
   const lines = useLinesList();
 
-  const [selectedLineId, setSelectedLineId] = useState(() => getLines()[0]?.id ?? '');
+  // Initial line is applied in useEffect once `lines` from the store is available (avoid stale getLines import).
+  const [selectedLineId, setSelectedLineId] = useState('');
 
   useEffect(() => {
     if (lines.length === 0) return;
