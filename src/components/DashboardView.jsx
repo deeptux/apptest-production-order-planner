@@ -1,33 +1,75 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useMemo, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import * as Tabs from '@radix-ui/react-tabs';
 import * as Dialog from '@radix-ui/react-dialog';
-import { usePlan } from '../context/PlanContext';
-import { useSnackbar } from '../context/SnackbarContext';
 import StatsCards from './StatsCards';
-import SectionTabs, { SECTIONS } from './SectionTabs';
+import SectionTabs from './SectionTabs';
 import PlanTable from './PlanTable';
 import GanttChart from './GanttChart';
 import { OutputByProductChart } from './OutputByProductChart';
 import OverrideQueue from './OverrideQueue';
-
-const DEMO_EXPORT_MESSAGE = 'Export (CSV/JSON) is for demo purposes and is not yet included.';
-const DEMO_PDF_MESSAGE = 'PDF export is for demo purposes and is not yet included.';
+import { DEMO_APP_NOTICE_TITLE, DEMO_APP_NOTICE_BODY } from '../constants/demoNotice';
+import { getLines, LINES_STORAGE_KEY } from '../store/productionLinesStore';
 
 export default function DashboardView() {
   const navigate = useNavigate();
-  const { rows, planDate, deleteBatch } = usePlan();
-  const { show: showSnackbar } = useSnackbar() ?? {};
-  const [section, setSection] = useState('mixing');
   const [demoModalOpen, setDemoModalOpen] = useState(false);
   const [demoModalMessage, setDemoModalMessage] = useState('');
 
-  const handleDeleteBatch = useCallback(
-    (rowId) => {
-      const result = deleteBatch(rowId);
-      if (result && !result.success && result.error) showSnackbar?.(result.error);
+  // production page saved lines in another browser tab — bump tick so we re-read getLines()
+  const [linesTick, setLinesTick] = useState(0);
+  useEffect(() => {
+    const onStorage = (e) => {
+      if (e.key === LINES_STORAGE_KEY) setLinesTick((t) => t + 1);
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, []);
+
+  const lines = useMemo(() => getLines(), [linesTick]);
+
+  const [selectedLineId, setSelectedLineId] = useState(() => getLines()[0]?.id ?? '');
+
+  useEffect(() => {
+    if (lines.length === 0) return;
+    if (!lines.some((l) => l.id === selectedLineId)) {
+      setSelectedLineId(lines[0].id);
+    }
+  }, [lines, selectedLineId]);
+
+  const selectedLine = useMemo(
+    () => lines.find((l) => l.id === selectedLineId) ?? lines[0],
+    [lines, selectedLineId]
+  );
+
+  const sortedProcesses = useMemo(() => {
+    const procs = selectedLine?.processes ?? [];
+    return [...procs].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  }, [selectedLine]);
+
+  const tabSections = useMemo(
+    () => sortedProcesses.map((p) => ({ id: p.id, label: p.name || p.id })),
+    [sortedProcesses]
+  );
+
+  const [section, setSection] = useState(() => sortedProcesses[0]?.id ?? 'mixing');
+
+  useEffect(() => {
+    if (sortedProcesses.length === 0) return;
+    if (!sortedProcesses.some((p) => p.id === section)) {
+      setSection(sortedProcesses[0].id);
+    }
+  }, [sortedProcesses, section]);
+
+  const handleLineChange = useCallback(
+    (e) => {
+      const id = e.target.value;
+      setSelectedLineId(id);
+      const line = lines.find((l) => l.id === id);
+      const procs = [...(line?.processes ?? [])].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+      if (procs[0]) setSection(procs[0].id);
     },
-    [deleteBatch, showSnackbar]
+    [lines]
   );
 
   const openDemoModal = useCallback((message) => {
@@ -38,38 +80,66 @@ export default function DashboardView() {
   return (
     <div className="p-4 sm:p-6 flex flex-col gap-6 max-w-[1600px] xl:max-w-[1920px] 2xl:max-w-[2200px] mx-auto w-full min-w-0">
       <OverrideQueue />
-      <StatsCards />
+      <StatsCards filterProductionLineId={selectedLineId} />
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 min-w-0">
-        <GanttChart maxRows={4} />
-        <OutputByProductChart maxRows={4} />
+        <GanttChart maxRows={4} filterProductionLineId={selectedLineId} />
+        <OutputByProductChart maxRows={4} filterProductionLineId={selectedLineId} />
       </div>
-      <section>
-        <SectionTabs value={section} onValueChange={setSection}>
-          {SECTIONS.map((sec) => (
-            <Tabs.Content key={sec.id} value={sec.id}>
-              <PlanTable
-                sectionId={sec.id}
-                onAddBatch={() => navigate('/scheduling')}
-                addButtonLabel="See All Schedules"
-                onDeleteBatch={handleDeleteBatch}
-                onReorder={() => navigate('/scheduling')}
-                onExport={() => openDemoModal(DEMO_EXPORT_MESSAGE)}
-                onExportPdf={() => openDemoModal(DEMO_PDF_MESSAGE)}
-                onLiveView={() => window.open('/live', '_blank')}
-                maxRows={4}
-              />
-            </Tabs.Content>
-          ))}
-        </SectionTabs>
+      <section className="flex flex-col gap-3">
+        <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4">
+          <label htmlFor="dashboard-line-profile" className="text-sm font-semibold text-gray-800 shrink-0">
+            Production Line Profile
+          </label>
+          <select
+            id="dashboard-line-profile"
+            value={selectedLineId}
+            onChange={handleLineChange}
+            className="border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 bg-white max-w-md w-full sm:w-auto min-w-[12rem]"
+          >
+            {lines.map((l) => (
+              <option key={l.id} value={l.id}>
+                {l.name || l.id}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {sortedProcesses.length === 0 ? (
+          <div className="bg-surface-card rounded-card border border-gray-200 p-6 text-sm text-gray-600 shadow-card">
+            No processes defined for this production line. Add processes in{' '}
+            <strong className="text-gray-800">Production</strong>.
+          </div>
+        ) : (
+          <SectionTabs value={section} onValueChange={setSection} sections={tabSections}>
+            {sortedProcesses.map((sec) => (
+              <Tabs.Content key={sec.id} value={sec.id}>
+                <PlanTable
+                  sectionId={sec.id}
+                  sortedProcesses={sortedProcesses}
+                  filterProductionLineId={selectedLineId}
+                  scheduleAlignedDisplay
+                  sortRowsByScheduleStart
+                  statusColumnLabel="Status"
+                  onAddBatch={() => navigate('/scheduling')}
+                  addButtonLabel="See All Schedules"
+                  onExport={() => openDemoModal(DEMO_APP_NOTICE_BODY)}
+                  onExportPdf={() => openDemoModal(DEMO_APP_NOTICE_BODY)}
+                  onLiveView={() => window.open('/live', '_blank')}
+                  maxRows={4}
+                />
+              </Tabs.Content>
+            ))}
+          </SectionTabs>
+        )}
       </section>
 
       <Dialog.Root open={demoModalOpen} onOpenChange={setDemoModalOpen}>
         <Dialog.Portal>
           <Dialog.Overlay className="fixed inset-0 bg-black/50 z-40" />
           <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-full max-w-sm -translate-x-1/2 -translate-y-1/2 rounded-lg border border-gray-200 bg-white p-4 shadow-lg">
-            <Dialog.Title className="text-lg font-semibold text-gray-900">Demo feature</Dialog.Title>
+            <Dialog.Title className="text-lg font-semibold text-gray-900">{DEMO_APP_NOTICE_TITLE}</Dialog.Title>
             <Dialog.Description className="text-sm text-gray-600 mt-2">
-              {demoModalMessage}
+              {demoModalMessage || DEMO_APP_NOTICE_BODY}
             </Dialog.Description>
             <div className="mt-4 flex justify-end">
               <Dialog.Close asChild>

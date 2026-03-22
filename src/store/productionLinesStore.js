@@ -1,8 +1,5 @@
-/**
- * Production lines store: full CRUD for production lines.
- * Each line has: capacityProfile (Capacity Name + Product + capacity), processes (CRUD), equipment per process (CRUD).
- * Used by Production page; Scheduling/Dashboard resolve capacity via Loaf Line (see capacityProfileStore).
- */
+// production page owns this: lines, capacity table per line, process list, equipment, mixing profiles, etc.
+// scheduling mostly just asks loaf line capacity through the thin helpers in capacityProfileStore
 import { isSupabaseConfigured } from '../lib/supabase';
 import { updateConfig } from '../api/config';
 
@@ -61,7 +58,7 @@ function normalizeLine(l) {
   const equipmentByProcessFinal = equipmentByProcess;
   const equipmentMinutesByProcess = l.equipmentMinutesByProcess && typeof l.equipmentMinutesByProcess === 'object' ? { ...l.equipmentMinutesByProcess } : {};
   const processTimesByProcess = l.processTimesByProcess && typeof l.processTimesByProcess === 'object' ? { ...l.processTimesByProcess } : {};
-  // Mixing profiles per process: each profile has equipment, equipmentMinutes, processTimes. Migrate legacy data into one profile if needed.
+  // mixing profile = equipment rows + timed steps + minutes maps (see normalize above for migration)
   let mixingProfilesByProcess = l.mixingProfilesByProcess && typeof l.mixingProfilesByProcess === 'object' ? { ...l.mixingProfilesByProcess } : {};
   Object.keys(mixingProfilesByProcess).forEach((procId) => {
     const list = mixingProfilesByProcess[procId];
@@ -107,7 +104,7 @@ function normalizeLine(l) {
           pts[i].order = next++;
         }
       } else {
-        // Fill missing with increasing orders after current max.
+        // process times missing .order — tack them on after the biggest order we already have
         const maxExisting = Math.max(
           maxEqOrder,
           pts.reduce((m, p) => Math.max(m, Number(p.order) || 0), 0),
@@ -122,7 +119,7 @@ function normalizeLine(l) {
       return { ...mp, equipment, processTimes: pts };
     });
   });
-  // Migration rule: if no explicit pipeline-stagger is set, treat a legacy-named "Gap" as the pipeline stagger.
+  // legacy "Gap" row == stagger if user never checked the stagger flags
   Object.keys(mixingProfilesByProcess).forEach((procId) => {
     const list = mixingProfilesByProcess[procId];
     if (!Array.isArray(list)) return;
@@ -137,7 +134,7 @@ function normalizeLine(l) {
       return { ...mp, equipment: eq, processTimes: pts };
     });
   });
-  // Migration: if a process has equipment/processTimes but no mixing profiles, create one profile from current data
+  // one-time lift: flat equipment + processTimes -> single default profile so UI has somewhere to edit
   const procList = processes;
   procList.forEach((p) => {
     const pid = p.id;
@@ -212,19 +209,17 @@ function persist() {
     localStorage.setItem(LINES_STORAGE_KEY, JSON.stringify(lines));
   } catch (_) {}
   if (isSupabaseConfigured()) {
-    // Fire-and-forget; latest lines are stored under config key "lines".
-    updateConfig('lines', { lines });
+    updateConfig('lines', { lines }); // async, key "lines"
   }
 }
 
-/** Hydrate production lines from Supabase config payload (array of raw line objects). */
+// supabase config pull -> memory
 export function hydrateLinesFromApi(list) {
   if (!Array.isArray(list) || list.length === 0) return;
   lines = list.map((l) => normalizeLine(l));
   persist();
 }
 
-/** Serialize current lines for pushing to Supabase config. */
 export function getLinesPayloadForApi() {
   return lines.map((l) => normalizeLine(l));
 }
@@ -339,7 +334,7 @@ export function deleteEquipmentItem(lineId, sectionId, itemId) {
   setEquipmentForSection(lineId, sectionId, arr);
 }
 
-// ----- Capacity profile per line -----
+// --- capacity rows attached to a line (product, yield, dough kg, ...) ---
 export function getCapacityProfileForLine(lineId) {
   const line = lines.find((l) => l.id === lineId);
   return line && Array.isArray(line.capacityProfile) ? line.capacityProfile.map((e) => ({ ...e })) : [];
@@ -395,7 +390,7 @@ export function deleteCapacityEntryForLine(lineId, entryId) {
   setCapacityProfileForLine(lineId, line.capacityProfile.filter((e) => e.id !== entryId));
 }
 
-/** Update all capacity profile entries that reference a product by its previous name (e.g. after renaming a recipe). */
+// recipe rename -> fix productName column everywhere it matched
 export function updateProductNameInCapacityProfiles(oldName, newName) {
   const oldTrimmed = (oldName || '').trim();
   const newTrimmed = (newName || '').trim();
@@ -411,7 +406,7 @@ export function updateProductNameInCapacityProfiles(oldName, newName) {
   });
 }
 
-/** Resolve capacity (pieces) by product name for a given line (used by Scheduling via Loaf Line). */
+// pieces for one sku on one line; falls back to 2340/1575 guess if name ends in 8s/12s (kinda hacky)
 export function getCapacityForProductFromLine(lineId, productName) {
   const entry = getCapacityEntryForProduct(lineId, productName);
   if (entry != null) return entry.capacity;
@@ -421,7 +416,7 @@ export function getCapacityForProductFromLine(lineId, productName) {
   return null;
 }
 
-/** Resolve capacity entry (capacity + doughWeightKg) by product name for a given line. */
+// full row from capacity profile for matching product (fuzzy match on 8s/12s suffix)
 export function getCapacityEntryForProduct(lineId, productName) {
   if (!productName || typeof productName !== 'string') return null;
   const profile = getCapacityProfileForLine(lineId);
@@ -439,19 +434,18 @@ export function getCapacityEntryForProduct(lineId, productName) {
   return null;
 }
 
-/** Resolve dough weight (kg) by product name for a given line. */
 export function getDoughWeightKgForProductFromLine(lineId, productName) {
   const entry = getCapacityEntryForProduct(lineId, productName);
   return entry?.doughWeightKg != null ? entry.doughWeightKg : null;
 }
 
-/** Resolve yield (pieces per one dough batch, e.g. 1092 for 8s) by product name for a given line. */
+// yield = pieces per dough batch (728 / 1092 style numbers)
 export function getYieldForProductFromLine(lineId, productName) {
   const entry = getCapacityEntryForProduct(lineId, productName);
   return entry?.yield != null ? entry.yield : null;
 }
 
-// ----- Processes per line -----
+// --- process tabs / ordering for a line ---
 export function getProcessesForLine(lineId) {
   const line = lines.find((l) => l.id === lineId);
   return line && Array.isArray(line.processes) ? [...line.processes].sort((a, b) => (a.order ?? 0) - (b.order ?? 0)) : [];
@@ -495,7 +489,6 @@ export function deleteProcess(lineId, processId) {
   updateLine(lineId, { processes, equipmentByProcess, equipmentMinutesByProcess, processTimesByProcess, mixingProfilesByProcess });
 }
 
-/** Get duration in minutes for a machine assigned to a line+process. */
 export function getEquipmentMinutes(lineId, processId, machineId) {
   const line = lines.find((l) => l.id === lineId);
   if (!line || !line.equipmentMinutesByProcess) return null;
@@ -505,7 +498,7 @@ export function getEquipmentMinutes(lineId, processId, machineId) {
   return v !== undefined && v !== null && !Number.isNaN(Number(v)) ? Number(v) : null;
 }
 
-/** Set duration in minutes for a machine assigned to a line+process. Pass null to clear. */
+// minutes === null deletes the key
 export function setEquipmentMinutes(lineId, processId, machineId, minutes) {
   const idx = lines.findIndex((l) => l.id === lineId);
   if (idx === -1) return;
@@ -521,7 +514,6 @@ export function setEquipmentMinutes(lineId, processId, machineId, minutes) {
   persist();
 }
 
-/** Get process times (name + minutes) for a line+process. */
 export function getProcessTimesForProcess(lineId, processId) {
   const line = lines.find((l) => l.id === lineId);
   if (!line || !line.processTimesByProcess) return [];
@@ -529,7 +521,6 @@ export function getProcessTimesForProcess(lineId, processId) {
   return Array.isArray(arr) ? arr.map((e) => ({ ...e })) : [];
 }
 
-/** Add a process time (name + minutes) for a line+process. */
 export function addProcessTime(lineId, processId, entry) {
   const idx = lines.findIndex((l) => l.id === lineId);
   if (idx === -1) return null;
@@ -548,7 +539,6 @@ export function addProcessTime(lineId, processId, entry) {
   return newEntry;
 }
 
-/** Update a process time entry. */
 export function updateProcessTime(lineId, processId, processTimeId, updates) {
   const idx = lines.findIndex((l) => l.id === lineId);
   if (idx === -1) return null;
@@ -571,7 +561,6 @@ export function updateProcessTime(lineId, processId, processTimeId, updates) {
   return nextList[i];
 }
 
-/** Delete a process time entry. */
 export function deleteProcessTime(lineId, processId, processTimeId) {
   const idx = lines.findIndex((l) => l.id === lineId);
   if (idx === -1) return;
@@ -583,8 +572,7 @@ export function deleteProcessTime(lineId, processId, processTimeId) {
   persist();
 }
 
-// ----- Mixing profiles (per line, per process) -----
-/** Get mixing profiles for a line+process. Each profile has id, equipment, equipmentMinutes, processTimes. */
+// --- mixing profiles: multiple saved setups per (line, process), mostly mixing uses this ---
 export function getMixingProfiles(lineId, processId) {
   const line = lines.find((l) => l.id === lineId);
   if (!line || !line.mixingProfilesByProcess) return [];
@@ -592,7 +580,7 @@ export function getMixingProfiles(lineId, processId) {
   return Array.isArray(list) ? list.map((mp) => ({ ...mp, equipment: [...(mp.equipment || [])], equipmentMinutes: { ...(mp.equipmentMinutes || {}) }, processTimes: (mp.processTimes || []).map((e) => ({ ...e })) })) : [];
 }
 
-/** Total minutes for a profile (sum of equipment minutes + process time minutes). Used as profile display name. */
+// sum all equipment minutes + process time minutes — UI shows this in the profile picker
 export function getProfileTotalMinutes(lineId, processId, profileId) {
   const line = lines.find((l) => l.id === lineId);
   if (!line || !line.mixingProfilesByProcess) return 0;
@@ -668,14 +656,12 @@ export function deleteMixingProfile(lineId, processId, profileId) {
   persist();
 }
 
-/** Get equipment list for a mixing profile. */
 export function getEquipmentForProfile(lineId, processId, profileId) {
   const profiles = getMixingProfiles(lineId, processId);
   const p = profiles.find((mp) => mp.id === profileId);
   return p && Array.isArray(p.equipment) ? p.equipment.map((e) => ({ ...e })) : [];
 }
 
-/** Set full equipment list for a profile. */
 export function setEquipmentForProfile(lineId, processId, profileId, equipmentList) {
   const idx = lines.findIndex((l) => l.id === lineId);
   if (idx === -1) return;
@@ -796,14 +782,13 @@ export function setEquipmentMinutesForProfile(lineId, processId, profileId, mach
   persist();
 }
 
-/** Get process times for a mixing profile. */
 export function getProcessTimesForProfile(lineId, processId, profileId) {
   const profiles = getMixingProfiles(lineId, processId);
   const p = profiles.find((mp) => mp.id === profileId);
   return p && Array.isArray(p.processTimes) ? p.processTimes.map((e) => ({ ...e })) : [];
 }
 
-/** Check if a process time name is already used in this profile (excluding optional processTimeId when editing). */
+// duplicate name guard — excludeProcessTimeId lets you save without tripping on yourself
 export function isProcessTimeNameUsedInProfile(lineId, processId, profileId, name, excludeProcessTimeId = null) {
   const list = getProcessTimesForProfile(lineId, processId, profileId);
   const trimmed = String(name ?? '').trim();
@@ -888,7 +873,7 @@ export function deleteProcessTimeFromProfile(lineId, processId, profileId, proce
   persist();
 }
 
-/** Pipelining stagger minutes: next batch Actual Process Start = previous + this (from explicit per-profile selection). */
+// how many minutes between "actual process starts" for back-to-back batches — comes from whichever step(s) user marked as pipeline stagger / breakpoint logic below
 export function getStaggerMinutesFromMixingProfiles(profiles) {
   const first = profiles && profiles[0];
   if (!first) return 0;
@@ -900,7 +885,7 @@ export function getStaggerMinutesFromMixingProfiles(profiles) {
   for (const pt of processTimes) if (pt?.isPipelineStagger) selectedKeys.push({ kind: 'processTime', id: pt.id });
   if (selectedKeys.length === 0) return 0;
 
-  // Build ordered steps across both lists
+  // merge equipment + extra timed steps into one ordered timeline
   const steps = [];
   for (const e of equipment) {
     const mins = first.equipmentMinutes && e?.id != null ? first.equipmentMinutes[e.id] : null;
@@ -923,13 +908,11 @@ export function getStaggerMinutesFromMixingProfiles(profiles) {
     const ao = a.order ?? Number.POSITIVE_INFINITY;
     const bo = b.order ?? Number.POSITIVE_INFINITY;
     if (ao !== bo) return ao - bo;
-    // Stable secondary ordering
-    if (a.kind !== b.kind) return a.kind.localeCompare(b.kind);
+    if (a.kind !== b.kind) return a.kind.localeCompare(b.kind); // tie-break
     return String(a.id).localeCompare(String(b.id));
   });
 
-  // Rule: stagger = earliest selected breakpoint in sequence.
-  // That means: compute cumulative time to each selected step; take the minimum.
+  // stagger = smallest cumulative minutes among flagged steps (earliest breakpoint wins)
   let cumulative = 0;
   const selectedSet = new Set(selectedKeys.map((k) => `${k.kind}:${k.id}`));
   let best = null;

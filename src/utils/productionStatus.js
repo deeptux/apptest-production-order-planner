@@ -1,7 +1,5 @@
-/**
- * Production status (Waiting / In Progress / Finished) based on current time in Asia/Singapore.
- * Compares row's scheduled start (date + Start Sponge) and end (date + End Batch, next day if batch crosses midnight).
- */
+// Waiting / In Progress / Finished — "now" is always interpreted in Asia/Singapore (+08)
+// end batch after midnight on the row bumps end date +1 day same as scheduling math
 
 function parseTimeToMinutes(str) {
   if (!str || typeof str !== 'string') return 0;
@@ -9,9 +7,7 @@ function parseTimeToMinutes(str) {
   return (h % 24) * 60 + (m || 0);
 }
 
-/**
- * Parse date (YYYY-MM-DD) and time (HH:MM) as a moment in Asia/Singapore, return epoch ms.
- */
+// force +08:00 so laptop timezone doesn't screw up status badges
 function parseSingaporeMs(dateStr, timeStr) {
   if (!dateStr || !timeStr || typeof timeStr !== 'string') return NaN;
   const normalized = timeStr.includes(':') ? timeStr : `${timeStr.slice(0, 2)}:${timeStr.slice(2)}`;
@@ -20,12 +16,7 @@ function parseSingaporeMs(dateStr, timeStr) {
   return Number.isNaN(ms) ? NaN : ms;
 }
 
-/**
- * Get production status for a plan row based on "now" in Asia/Singapore.
- * @param {Object} row - Plan row with date, startSponge, endBatch
- * @param {number} [nowMs] - Epoch ms to compare (default: Date.now())
- * @returns {'Waiting'|'In Progress'|'Finished'}
- */
+// nowMs optional for tests / simulated clock
 export function getProductionStatus(row, nowMs = Date.now()) {
   const date = row.date && typeof row.date === 'string' ? row.date.split('T')[0] : '';
   const startSponge = row.startSponge || '00:00';

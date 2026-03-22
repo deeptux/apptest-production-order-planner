@@ -1,8 +1,5 @@
-/**
- * Realistic process durations per SKU from NPB reference: Process Duration.xlsx.
- * Columns: Sponge Mixing → Floor Time = Mixing; IP = Makeup Dividing; FP = Makeup Panning;
- * Baking; Cooling + Packaging = Packaging. All values in minutes.
- */
+// fallback minutes when recipe store doesn't have the product yet — typed from Process Duration.xlsx (NPB ref)
+// mixing column = sponge mixing through floor time; IP/FP = dividing/panning; packaging includes cooling+pack in the sheet
 export const SKU_PROCESS_DURATIONS = {
   'Everyday Bread 8s': {
     mixing: 282,       // Sponge Mixing to Floor Time (SL)

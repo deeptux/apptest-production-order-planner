@@ -1,10 +1,7 @@
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { NavContent } from './NavContent';
 
-/**
- * Desktop only (lg+): sticky sidebar with collapse and circular chevron.
- * Theme: primary background, white text. Not shown on mobile/tablet.
- */
+// lg+ layout only — mobile uses drawer. orange rail + collapse chevron
 export default function Sidebar({ currentPage, onNavigate, collapsed, onToggleCollapse }) {
   return (
     <aside

@@ -34,9 +34,12 @@ function useIsDesktop() {
   return isDesktop;
 }
 
-export default function GanttChart({ maxRows }) {
+export default function GanttChart({ maxRows, filterProductionLineId }) {
   const { rows: fullRows, planDate } = usePlan();
-  const rows = typeof maxRows === 'number' && maxRows > 0 ? fullRows.slice(0, maxRows) : fullRows;
+  const lineFilteredRows = filterProductionLineId
+    ? fullRows.filter((r) => r.productionLineId === filterProductionLineId)
+    : fullRows;
+  const rows = typeof maxRows === 'number' && maxRows > 0 ? lineFilteredRows.slice(0, maxRows) : lineFilteredRows;
   const isDesktop = useIsDesktop();
 
   const { chartData, domainMax, minBase, startLabel, endLabel } = useMemo(() => {

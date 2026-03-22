@@ -4,10 +4,7 @@ function planTable() {
   return supabase.schema(SUPABASE_SCHEMA).from('plan');
 }
 
-/**
- * Fetch the current plan (single row with latest updated_at).
- * Returns { id, plan_date, rows } or null if no backend or no row.
- */
+// newest row by updated_at wins (we only keep one "current" plan in the table right now)
 export async function getPlan() {
   if (!supabase) return null;
   const { data, error } = await planTable()
@@ -22,10 +19,7 @@ export async function getPlan() {
   return data;
 }
 
-/**
- * Update the plan. If planId is provided, update that row; otherwise insert a new row.
- * planDate: Date or ISO string; rows: array of row objects.
- */
+// planId set => update; missing => insert (first save on fresh db)
 export async function updatePlan(planId, { planDate, rows }) {
   if (!supabase) return { ok: false };
   const payload = {
@@ -49,10 +43,6 @@ export async function updatePlan(planId, { planDate, rows }) {
   return { ok: true, id: data?.id };
 }
 
-/**
- * Subscribe to plan table changes (Realtime). Calls onUpdate when plan row changes.
- * Returns unsubscribe function.
- */
 export function subscribePlan(onUpdate) {
   if (!supabase || !onUpdate) return () => {};
   const channel = supabase

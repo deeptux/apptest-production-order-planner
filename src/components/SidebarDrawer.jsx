@@ -1,11 +1,7 @@
 import { Sheet, SheetContent } from './ui/sheet';
 import { NavContent } from './NavContent';
 
-/**
- * Mobile/tablet only: drawer (Sheet) that opens from the left.
- * Uses theme: bg-primary, text white, same nav items as desktop Sidebar.
- * Hidden on lg+ via SheetContent className.
- */
+// hamburger menu — radix sheet, same links as Sidebar. lg:hidden on the sheet content
 export default function SidebarDrawer({ open, onOpenChange, currentPage, onNavigate }) {
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>

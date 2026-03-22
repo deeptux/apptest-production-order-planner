@@ -1,8 +1,5 @@
-/**
- * Capacity profile store: product → capacity per line.
- * Uses Production page (productionLinesStore) as source of truth.
- * When lineId is provided (e.g. from plan row), uses that line; else infers from recipe's productionLineId or Loaf Line.
- */
+// thin facades so scheduling/dashboard don't import productionLinesStore everywhere.
+// pass lineId from the plan row when you have it; otherwise we guess from recipe.productionLineId or default loaf line
 import {
   getLoafLine,
   getCapacityForProductFromLine,
@@ -17,9 +14,6 @@ import {
 } from './productionLinesStore.js';
 import { getRecipeByName } from './recipeStore.js';
 
-/**
- * Resolve capacity by product name. Uses lineId when provided (e.g. from plan row); otherwise infers from recipe's production line or Loaf Line.
- */
 export function getCapacityForProduct(productName, lineId) {
   if (!productName || typeof productName !== 'string') return null;
   if (lineId) return getCapacityForProductFromLine(lineId, productName);
@@ -29,9 +23,6 @@ export function getCapacityForProduct(productName, lineId) {
   return loaf ? getCapacityForProductFromLine(loaf.id, productName) : null;
 }
 
-/**
- * Resolve dough weight (kg) by product name. Uses lineId when provided; otherwise infers from recipe or Loaf Line.
- */
 export function getDoughWeightKgForProduct(productName, lineId) {
   if (!productName || typeof productName !== 'string') return null;
   if (lineId) return getDoughWeightKgForProductFromLine(lineId, productName);
@@ -41,9 +32,6 @@ export function getDoughWeightKgForProduct(productName, lineId) {
   return loaf ? getDoughWeightKgForProductFromLine(loaf.id, productName) : null;
 }
 
-/**
- * Resolve yield (pieces per one dough batch, e.g. 1092 for 8s) by product name. Uses lineId when provided; otherwise infers from recipe or Loaf Line.
- */
 export function getYieldForProduct(productName, lineId) {
   if (!productName || typeof productName !== 'string') return null;
   if (lineId) return getYieldForProductFromLine(lineId, productName);
@@ -53,7 +41,6 @@ export function getYieldForProduct(productName, lineId) {
   return loaf ? getYieldForProductFromLine(loaf.id, productName) : null;
 }
 
-/** Resolve grams per unit (target weight per piece in g) by product name. */
 export function getGramsPerUnitForProduct(productName, lineId) {
   if (!productName || typeof productName !== 'string') return null;
   const entry = lineId
@@ -67,7 +54,6 @@ export function getGramsPerUnitForProduct(productName, lineId) {
   return entry?.gramsPerUnit != null ? entry.gramsPerUnit : null;
 }
 
-/** Resolve total dough weight (kg) per batch including ingredients by product name. */
 export function getTotalDoughWeightKgForProduct(productName, lineId) {
   if (!productName || typeof productName !== 'string') return null;
   const entry = lineId
@@ -81,13 +67,13 @@ export function getTotalDoughWeightKgForProduct(productName, lineId) {
   return entry?.totalDoughWeightKg != null ? entry.totalDoughWeightKg : null;
 }
 
-/** @deprecated Use productionLinesStore.getCapacityProfileForLine(loafLineId) for Loaf Line. */
+// @deprecated — use getCapacityProfileForLine(loaf id)
 export function getCapacityProfile() {
   const loaf = getLoafLine();
   return loaf ? getCapacityProfileForLine(loaf.id) : [];
 }
 
-/** @deprecated Use productionLinesStore.setCapacityProfileForLine(loafLineId, entries). */
+// @deprecated
 export function setCapacityProfile(entries) {
   const loaf = getLoafLine();
   if (loaf && Array.isArray(entries)) {
@@ -100,13 +86,13 @@ export function setCapacityProfile(entries) {
   }
 }
 
-/** @deprecated Use productionLinesStore.addCapacityEntryForLine(loafLineId, entry). */
+// @deprecated
 export function addCapacityEntry(productOrType, capacity) {
   const loaf = getLoafLine();
   if (loaf) addCapacityEntryForLine(loaf.id, { capacityName: productOrType, productName: '', capacity });
 }
 
-/** @deprecated Use productionLinesStore.updateCapacityEntryForLine. */
+// @deprecated
 export function updateCapacityEntry(index, productOrType, capacity) {
   const loaf = getLoafLine();
   if (!loaf || !Array.isArray(loaf.capacityProfile)) return;
@@ -114,7 +100,7 @@ export function updateCapacityEntry(index, productOrType, capacity) {
   if (entry) updateCapacityEntryForLine(loaf.id, entry.id, { capacityName: productOrType, productName: entry.productName, capacity });
 }
 
-/** @deprecated Use productionLinesStore.deleteCapacityEntryForLine. */
+// @deprecated
 export function deleteCapacityEntry(index) {
   const loaf = getLoafLine();
   if (!loaf || !Array.isArray(loaf.capacityProfile)) return;

@@ -1,8 +1,5 @@
-/**
- * Recipe store: list of recipes (products) with stage durations.
- * Supports dynamic process lines: processDurations[processId] = minutes.
- * Legacy keys (mixing, makeupDividing, ...) are migrated from/derived for Scheduling/Dashboard.
- */
+// recipes = products + how long each stage runs. newer shape is processDurations[processId]=minutes;
+// old saved data still has mixing / makeupDividing keys — we normalize both ways so scheduling doesn't break
 import { SKU_PROCESS_DURATIONS } from '../data/skuProcessDurations.js';
 import { getProcessesForLine } from './productionLinesStore.js';
 import { isSupabaseConfigured } from '../lib/supabase';
@@ -10,11 +7,11 @@ import { updateConfig } from '../api/config';
 
 const LOAF_RECIPES_KEY = 'loaf-recipes';
 
-/** Default process ids (same order as legacy keys) for migration and getStageDurations. */
+// fixed loaf order — ids line up with camelCase keys on disk
 const LEGACY_PROCESS_IDS = ['mixing', 'makeup-dividing', 'makeup-panning', 'baking', 'packaging'];
 const LEGACY_KEYS = ['mixing', 'makeupDividing', 'makeupPanning', 'baking', 'packaging'];
 
-/** Map process id to legacy key for stage duration lookup. */
+// ui uses hyphen ids; stored recipes often use camelCase — bridge table
 export const PROCESS_ID_TO_LEGACY_KEY = {
   'mixing': 'mixing',
   'makeup-dividing': 'makeupDividing',
@@ -101,19 +98,18 @@ function persist() {
     localStorage.setItem(LOAF_RECIPES_KEY, JSON.stringify(recipes));
   } catch (_) {}
   if (isSupabaseConfigured()) {
-    // Fire-and-forget; latest recipes are stored under config key "recipes".
-    updateConfig('recipes', { recipes });
+    updateConfig('recipes', { recipes }); // async, key "recipes"
   }
 }
 
-/** Hydrate recipes from Supabase config payload (array of raw recipe objects). */
+// supabase config pull -> memory
 export function hydrateRecipesFromApi(list) {
   if (!Array.isArray(list) || list.length === 0) return;
   recipes = list.map((r) => normalizeRecipe(r));
   persist();
 }
 
-/** Serialize current recipes for pushing to Supabase config. */
+// body for PATCH config
 export function getRecipesPayloadForApi() {
   return recipes.map((r) => ({ ...r }));
 }
@@ -122,7 +118,7 @@ export function getRecipes() {
   return recipes.map((r) => ({ ...r }));
 }
 
-/** Recipes for a specific production line (Recipe page shows only these). */
+// recipe editor filters here so buns line doesn't show loaf skus
 export function getRecipesForLine(lineId) {
   if (!lineId) return [];
   return recipes.filter((r) => r.productionLineId === lineId).map((r) => ({ ...r }));
@@ -133,7 +129,7 @@ export function getRecipeByName(name) {
   return recipes.find((r) => r.name === name) ?? null;
 }
 
-/** Which process defines "End Dough" for this product (process id, e.g. 'mixing', 'makeup-panning'). Used by Scheduling. */
+// which step counts as "end dough" on the grid — default mixing if recipe forgot to set it
 export function getEndDoughProcessIdForProduct(productName) {
   const r = getRecipeByName(productName);
   return (r && r.endDoughProcessId) ? r.endDoughProcessId : 'mixing';
@@ -157,7 +153,7 @@ export function getTotalProcessMinutes(productName) {
   return (d.mixing || 0) + (d.makeupDividing || 0) + (d.makeupPanning || 0) + (d.baking || 0) + (d.packaging || 0);
 }
 
-/** Total process time (minutes) for a recipe when using a given production line's processes. */
+// sum minutes only for processes that actually exist on that line (custom lines may omit a stage)
 export function getTotalProcessMinutesForLine(productName, lineId) {
   const r = getRecipeByName(productName);
   if (!r || !lineId) return getTotalProcessMinutes(productName);

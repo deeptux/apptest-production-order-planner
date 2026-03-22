@@ -1,11 +1,7 @@
-/**
- * Global machines and equipment store.
- */
+// master list of equipment names — production page attaches them to line/process
 const MACHINES_STORAGE_KEY = 'loaf-machines-equipment-v2';
 
-/**
- * Default machines/equipment (flat list; assign to production line + process via Machines table or Production tab).
- */
+// shipped defaults; user can add more in UI but those live in localStorage
 const DEFAULT_MACHINES = [
   { id: 'm-01', name: 'Sponge Mixer' },
   { id: 'm-02', name: 'Dough Mixer' },
@@ -57,11 +53,8 @@ function loadMachines() {
 
 let machines = loadMachines();
 
-/**
- * Reset the machines list to the current DEFAULT_MACHINES (from code).
- * Use this after updating DEFAULT_MACHINES so the app uses the new list instead of old localStorage data.
- * Warning: removes any machines added only in the UI that are not in DEFAULT_MACHINES.
- */
+// nuclear option: throw away localStorage list and reload DEFAULT_MACHINES from this file.
+// wipes machines someone only added in the browser if they're not in the array above
 export function resetMachinesToDefaults() {
   machines = DEFAULT_MACHINES.map((m) => ({ ...m }));
   persist();

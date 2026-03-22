@@ -1,7 +1,5 @@
-/**
- * Pipelined batching sanity tests (run with: node src/test-pipeline.mjs)
- * Self-contained: same logic as getStaggerMinutesFromMixingProfiles and addMinutesToTime/parseTimeToMinutes.
- */
+// quick node script: node src/test-pipeline.mjs
+// copies the stagger + time math from productionLinesStore / stageDurations so we can break it in isolation
 function assert(condition, msg) {
   if (!condition) throw new Error(msg);
 }

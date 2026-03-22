@@ -2,127 +2,165 @@ import { Plus, ArrowUpDown, Download, FileText, Eye, Trash2 } from 'lucide-react
 import { useMemo, useState, useEffect } from 'react';
 import { usePlan } from '../context/PlanContext';
 import { getOrderBatchAndLineBatch } from '../store/planStore';
-import { computeStageDurationsForRow } from '../utils/stageDurations';
+import {
+  getAlignedLegacyProcessProcMinutes,
+  getProcMinutesForPlanSection,
+  getProcessWindowEndOffsetMinutes,
+  getProcessWindowStartOffsetMinutes,
+  isLegacyProcessSectionId,
+} from '../utils/stageDurations';
 import { getProductionStatus } from '../utils/productionStatus';
 import { getCapacityForProduct, getDoughWeightKgForProduct } from '../store/capacityProfileStore';
+import { formatSkuIdFromMs, getRowCreatedAtMs } from '../utils/skuId';
+import {
+  batchScheduleAnchorMs,
+  buildSkuBatchOrderMap,
+  compareRowsScheduleOrder,
+  displaySoCoExcessForTable,
+  formatDateRelativeScheduling,
+  formatProcMinutesAsHours,
+  schedulingTimeStackFromMs,
+  schedulingTimeStackFromRowHm,
+} from '../utils/planDisplay';
+import { SECTIONS } from './SectionTabs';
 
-const MIXING_COLUMNS = [
-  { key: 'product', label: 'Product' },
+// shared table: live station + dashboard. dashboard turns on scheduleAlignedDisplay so the time cells
+// and SKU batch labels line up with what scheduling shows (12h + day line, sku map, etc.)
+const PRODUCT_COL = { key: 'product', label: 'Product' };
+
+const COLS_AFTER_TIME_BLOCK = [
   { key: 'salesOrder', label: 'Sales Order' },
-  { key: 'soQty', label: 'Total Qty' },
+  { key: 'capacity', label: 'Capacity' },
+  { key: 'doughWeightKg', label: 'Dough (kg)' },
   { key: 'soCoExcess', label: 'SO-CO Excess' },
   { key: 'exchangeForLoss', label: 'Exch. Loss' },
   { key: 'excess', label: 'Excess' },
   { key: 'samples', label: 'Samples' },
   { key: 'carryOverExcess', label: 'Carry Over' },
   { key: 'theorExcess', label: 'Theor. Excess' },
-  { key: 'theorOutput', label: 'Batch Qty' },
-  { key: 'capacity', label: 'Capacity' },
-  { key: 'doughWeightKg', label: 'Dough (kg)' },
-  { key: 'procTime', label: 'Proc.Time' },
-  { key: 'startSponge', label: 'Start Sponge' },
-  { key: 'endDough', label: 'End Dough' },
-  { key: 'endBatch', label: 'End Batch' },
-  { key: 'orderBatch', label: 'Order Batch' },
-  { key: 'batch', label: 'Line Batch' },
-  { key: 'productionStatus', label: 'Production Status' },
 ];
 
-const SECTION_COLUMNS = {
-  mixing: MIXING_COLUMNS,
-  'makeup-dividing': [
-    { key: 'product', label: 'Product' },
-    { key: 'salesOrder', label: 'Sales Order' },
-    { key: 'soQty', label: 'Total Qty' },
-    { key: 'soCoExcess', label: 'SO-CO Excess' },
-    { key: 'exchangeForLoss', label: 'Exch. Loss' },
-    { key: 'excess', label: 'Excess' },
-    { key: 'samples', label: 'Samples' },
-    { key: 'carryOverExcess', label: 'Carry Over' },
-    { key: 'theorExcess', label: 'Theor. Excess' },
-    { key: 'theorOutput', label: 'Batch Qty' },
-    { key: 'capacity', label: 'Capacity' },
-    { key: 'doughWeightKg', label: 'Dough (kg)' },
-    { key: 'procTime', label: 'Proc.Time' },
-    { key: 'startSponge', label: 'Start Dividing' },
-    { key: 'endDough', label: 'End Dividing' },
-    { key: 'endBatch', label: 'End Batch' },
-    { key: 'orderBatch', label: 'Order Batch' },
-    { key: 'batch', label: 'Line Batch' },
-    { key: 'productionStatus', label: 'Production Status' },
-  ],
-  'makeup-panning': [
-    { key: 'product', label: 'Product' },
-    { key: 'salesOrder', label: 'Sales Order' },
-    { key: 'soQty', label: 'Total Qty' },
-    { key: 'soCoExcess', label: 'SO-CO Excess' },
-    { key: 'exchangeForLoss', label: 'Exch. Loss' },
-    { key: 'excess', label: 'Excess' },
-    { key: 'samples', label: 'Samples' },
-    { key: 'carryOverExcess', label: 'Carry Over' },
-    { key: 'theorExcess', label: 'Theor. Excess' },
-    { key: 'theorOutput', label: 'Batch Qty' },
-    { key: 'capacity', label: 'Capacity' },
-    { key: 'doughWeightKg', label: 'Dough (kg)' },
-    { key: 'procTime', label: 'Proc.Time' },
-    { key: 'startSponge', label: 'Start Panning' },
-    { key: 'endDough', label: 'End Panning' },
-    { key: 'endBatch', label: 'End Batch' },
-    { key: 'orderBatch', label: 'Order Batch' },
-    { key: 'batch', label: 'Line Batch' },
-    { key: 'productionStatus', label: 'Production Status' },
-  ],
-  baking: [
-    { key: 'product', label: 'Product' },
-    { key: 'salesOrder', label: 'Sales Order' },
-    { key: 'soQty', label: 'Total Qty' },
-    { key: 'soCoExcess', label: 'SO-CO Excess' },
-    { key: 'exchangeForLoss', label: 'Exch. Loss' },
-    { key: 'excess', label: 'Excess' },
-    { key: 'samples', label: 'Samples' },
-    { key: 'carryOverExcess', label: 'Carry Over' },
-    { key: 'theorExcess', label: 'Theor. Excess' },
-    { key: 'theorOutput', label: 'Batch Qty' },
-    { key: 'capacity', label: 'Capacity' },
-    { key: 'doughWeightKg', label: 'Dough (kg)' },
-    { key: 'procTime', label: 'Proc.Time' },
-    { key: 'startSponge', label: 'Start Baking' },
-    { key: 'endDough', label: 'End Baking' },
-    { key: 'endBatch', label: 'End Batch' },
-    { key: 'orderBatch', label: 'Order Batch' },
-    { key: 'batch', label: 'Line Batch' },
-    { key: 'productionStatus', label: 'Production Status' },
-  ],
-  packaging: [
-    { key: 'product', label: 'Product' },
-    { key: 'salesOrder', label: 'Sales Order' },
-    { key: 'soQty', label: 'Total Qty' },
-    { key: 'soCoExcess', label: 'SO-CO Excess' },
-    { key: 'exchangeForLoss', label: 'Exch. Loss' },
-    { key: 'excess', label: 'Excess' },
-    { key: 'samples', label: 'Samples' },
-    { key: 'carryOverExcess', label: 'Carry Over' },
-    { key: 'theorExcess', label: 'Theor. Excess' },
-    { key: 'theorOutput', label: 'Batch Qty' },
-    { key: 'capacity', label: 'Capacity' },
-    { key: 'doughWeightKg', label: 'Dough (kg)' },
-    { key: 'procTime', label: 'Proc.Time' },
-    { key: 'startSponge', label: 'Start Sponge' },
-    { key: 'endDough', label: 'End Packaging' },
-    { key: 'endBatch', label: 'End Batch' },
-    { key: 'orderBatch', label: 'Order Batch' },
-    { key: 'batch', label: 'Line Batch' },
-    { key: 'productionStatus', label: 'Production Status' },
-  ],
+const ORDER_AND_SKU_BATCH = [
+  { key: 'orderBatch', label: 'Order Batch' },
+  { key: 'batch', label: 'SKU Batch Order' },
+];
+
+const TAIL_META = [{ key: 'productionStatus', label: 'Production Status' }];
+
+const LEGACY_TIME_LABELS = {
+  mixing: { start: 'Start Sponge', endDough: 'End Dough', endBatch: 'End Batch' },
+  'makeup-dividing': { start: 'Start Dividing', endDough: 'End Dividing', endBatch: 'End Batch' },
+  'makeup-panning': { start: 'Start Panning', endDough: 'End Panning', endBatch: 'End Batch' },
+  baking: { start: 'Start Baking', endDough: 'End Baking', endBatch: 'End Batch' },
+  packaging: { start: 'Start Packaging', endDough: 'End Packaging', endBatch: 'End Batch' },
 };
 
-export default function PlanTable({ sectionId, onAddBatch, addButtonLabel = 'Add batch', onDeleteBatch, onReorder, onExport, onExportPdf, onLiveView, maxRows }) {
+function timeColumnsForProcess(process) {
+  const id = process?.id;
+  const name = (process?.name || id || 'Process').trim();
+  const legacy = id && LEGACY_TIME_LABELS[id];
+  if (legacy) {
+    return [
+      { key: 'startSponge', label: legacy.start },
+      { key: 'endDough', label: legacy.endDough },
+      { key: 'endBatch', label: legacy.endBatch },
+    ];
+  }
+  return [
+    { key: 'startSponge', label: `Start ${name}` },
+    { key: 'endDough', label: `End ${name}` },
+    { key: 'endBatch', label: 'End Batch' },
+  ];
+}
+
+export function buildPlanColumnsForProcess(process) {
+  return [
+    PRODUCT_COL,
+    { key: 'skuId', label: 'SKU ID#' },
+    { key: 'soQty', label: 'Total Qty' },
+    { key: 'theorOutput', label: 'Batch Qty' },
+    { key: 'procTime', label: 'Proc.Time' },
+    ...timeColumnsForProcess(process),
+    ...ORDER_AND_SKU_BATCH,
+    ...COLS_AFTER_TIME_BLOCK,
+    ...TAIL_META,
+  ];
+}
+
+const LEGACY_SECTION_IDS = ['mixing', 'makeup-dividing', 'makeup-panning', 'baking', 'packaging'];
+
+export const SECTION_COLUMNS = Object.fromEntries(
+  LEGACY_SECTION_IDS.map((id) => {
+    const label = SECTIONS.find((s) => s.id === id)?.label ?? id;
+    return [id, buildPlanColumnsForProcess({ id, name: label })];
+  })
+);
+
+const FALLBACK_COLUMNS = buildPlanColumnsForProcess({ id: 'mixing', name: 'Mixing' });
+
+// copy/paste vibe from SchedulingView schedule mode — big time, small gray date under it
+function SchedulingStackCell({ stack, topClassName = 'font-medium text-gray-900 tabular-nums' }) {
+  if (!stack) return '—';
+  return (
+    <div className="leading-tight">
+      <div className={topClassName}>{stack.time}</div>
+      <div className="text-[0.65rem] sm:text-xs text-gray-500">{stack.sub}</div>
+    </div>
+  );
+}
+
+export default function PlanTable({
+  sectionId,
+  onAddBatch,
+  addButtonLabel = 'Add batch',
+  onDeleteBatch,
+  onReorder,
+  onExport,
+  onExportPdf,
+  onLiveView,
+  maxRows,
+  statusColumnLabel = 'Production Status',
+  sortedProcesses,
+  filterProductionLineId,
+  scheduleAlignedDisplay = false,
+  sortRowsByScheduleStart = false,
+}) {
   const { rows: fullRows } = usePlan();
-  const rows = typeof maxRows === 'number' && maxRows > 0 ? fullRows.slice(0, maxRows) : fullRows;
-  const baseColumns = SECTION_COLUMNS[sectionId] || MIXING_COLUMNS;
+
+  const lineFiltered = useMemo(() => {
+    if (!filterProductionLineId) return fullRows;
+    return fullRows.filter((r) => r.productionLineId === filterProductionLineId);
+  }, [fullRows, filterProductionLineId]);
+
+  const orderedRows = useMemo(() => {
+    if (!sortRowsByScheduleStart) return lineFiltered;
+    return [...lineFiltered].sort(compareRowsScheduleOrder);
+  }, [lineFiltered, sortRowsByScheduleStart]);
+
+  const rows =
+    typeof maxRows === 'number' && maxRows > 0 ? orderedRows.slice(0, maxRows) : orderedRows;
+
+  const processesForProcTime = useMemo(() => {
+    if (Array.isArray(sortedProcesses) && sortedProcesses.length > 0) return sortedProcesses;
+    return SECTIONS.map((s, i) => ({ id: s.id, name: s.label, order: i }));
+  }, [sortedProcesses]);
+
+  const baseColumns = useMemo(() => {
+    let cols;
+    if (Array.isArray(sortedProcesses) && sortedProcesses.length > 0) {
+      const p = sortedProcesses.find((x) => x.id === sectionId);
+      if (p) cols = buildPlanColumnsForProcess(p);
+    }
+    if (!cols) cols = SECTION_COLUMNS[sectionId] || FALLBACK_COLUMNS;
+    if (!scheduleAlignedDisplay) {
+      return cols.map((c) => (c.key === 'batch' ? { ...c, label: 'Line Batch' } : c));
+    }
+    return cols;
+  }, [sectionId, sortedProcesses, scheduleAlignedDisplay]);
+
   const restColumns = baseColumns.filter((c) => c.key !== 'productionStatus');
   const columns = [
-    { key: 'productionStatus', label: 'Production Status' },
+    { key: 'productionStatus', label: statusColumnLabel },
     ...(onDeleteBatch ? [{ key: 'actions', label: 'Actions' }] : []),
     ...restColumns,
   ];
@@ -133,37 +171,31 @@ export default function PlanTable({ sectionId, onAddBatch, addButtonLabel = 'Add
     return () => clearInterval(interval);
   }, []);
 
-  const { orderBatch: orderBatchMap, lineBatch: lineBatchMap } = useMemo(
-    () => getOrderBatchAndLineBatch(rows),
-    [rows]
+  const { orderBatch: orderBatchMap, lineBatch: lineBatchMapLegacy } = useMemo(
+    () => getOrderBatchAndLineBatch(fullRows),
+    [fullRows]
   );
+  const skuBatchOrderMap = useMemo(() => buildSkuBatchOrderMap(fullRows), [fullRows]);
 
-  const stageDurationsById = useMemo(() => {
-    const map = new Map();
+  const procTimeByRowId = useMemo(() => {
+    const m = new Map();
     rows.forEach((row) => {
-      map.set(row.id, computeStageDurationsForRow(row));
+      if (row.isBreak) {
+        m.set(row.id, null);
+        return;
+      }
+      if (scheduleAlignedDisplay && isLegacyProcessSectionId(sectionId)) {
+        const aligned = getAlignedLegacyProcessProcMinutes(row, sectionId);
+        m.set(row.id, aligned != null && !Number.isNaN(aligned) ? aligned : null);
+        return;
+      }
+      const mins = getProcMinutesForPlanSection(row, sectionId, processesForProcTime);
+      m.set(row.id, mins != null && !Number.isNaN(Number(mins)) ? mins : null);
     });
-    return map;
-  }, [rows]);
+    return m;
+  }, [rows, sectionId, processesForProcTime, scheduleAlignedDisplay]);
 
-  const getProcTimeForSection = (rowId) => {
-    const stages = stageDurationsById.get(rowId);
-    if (!stages) return '—';
-    switch (sectionId) {
-      case 'mixing':
-        return stages.mixing;
-      case 'makeup-dividing':
-        return stages.makeupDividing;
-      case 'makeup-panning':
-        return stages.makeupPanning;
-      case 'baking':
-        return stages.baking;
-      case 'packaging':
-        return stages.packaging;
-      default:
-        return stages.mixing;
-    }
-  };
+  const timeLikeKeys = new Set(['startSponge', 'endDough', 'endBatch', 'procTime']);
 
   return (
     <div className="bg-surface-card rounded-b-card shadow-card overflow-hidden border border-t-0 border-gray-200">
@@ -179,6 +211,27 @@ export default function PlanTable({ sectionId, onAddBatch, addButtonLabel = 'Add
             </tr>
           </thead>
           <tbody>
+            {scheduleAlignedDisplay && typeof maxRows === 'number' && maxRows > 0 && (
+              <tr className="bg-amber-50/60 border-b border-amber-100/90">
+                <td
+                  colSpan={columns.length}
+                  className="py-2 px-3 sm:px-4 text-[0.7rem] sm:text-xs text-gray-700"
+                >
+                  <span className="inline-flex items-center gap-1.5 font-semibold text-gray-800">
+                    <span
+                      className="inline-block h-2 w-2 rounded-full bg-amber-500 shrink-0"
+                      aria-hidden
+                    />
+                    Top {maxRows} upcoming batches
+                  </span>
+                  <span className="text-gray-600">
+                    {' '}
+                    — earliest start first for this line (schedule order). Open{' '}
+                    <strong className="font-medium text-gray-800">Scheduling</strong> for the full plan.
+                  </span>
+                </td>
+              </tr>
+            )}
             {rows.map((row) => {
               const rowStatus = getProductionStatus(row, statusTick);
               return (
@@ -201,9 +254,28 @@ export default function PlanTable({ sectionId, onAddBatch, addButtonLabel = 'Add
                     }
                     let value;
                     if (key === 'orderBatch') {
-                      value = orderBatchMap[row.id] ?? '—';
+                      if (row.isBreak) {
+                        value = '—';
+                      } else if (scheduleAlignedDisplay) {
+                        const ob = orderBatchMap[row.id] ?? '—';
+                        const ymd = (row.date || '').split('T')[0];
+                        value = (
+                          <div className="leading-tight">
+                            <div className="font-medium text-gray-900">{ob}</div>
+                            <div className="text-[0.65rem] sm:text-xs text-gray-500">
+                              {ymd ? formatDateRelativeScheduling(ymd) : '—'}
+                            </div>
+                          </div>
+                        );
+                      } else {
+                        value = orderBatchMap[row.id] ?? '—';
+                      }
                     } else if (key === 'batch') {
-                      value = lineBatchMap[row.id] ?? row[key] ?? '—';
+                      if (scheduleAlignedDisplay) {
+                        value = row.isBreak ? '—' : (skuBatchOrderMap[row.id] ?? '—');
+                      } else {
+                        value = lineBatchMapLegacy[row.id] ?? row[key] ?? '—';
+                      }
                     } else if (key === 'productionStatus') {
                       const statusClass =
                         rowStatus === 'In Progress'
@@ -217,16 +289,80 @@ export default function PlanTable({ sectionId, onAddBatch, addButtonLabel = 'Add
                         </span>
                       );
                     } else if (key === 'procTime') {
-                      value = getProcTimeForSection(row.id);
+                      const mins = procTimeByRowId.get(row.id);
+                      if (mins == null) value = '—';
+                      else value = scheduleAlignedDisplay ? formatProcMinutesAsHours(mins) : mins;
+                    } else if (key === 'skuId') {
+                      value = row.isBreak ? '—' : formatSkuIdFromMs(getRowCreatedAtMs(row));
+                    } else if (key === 'startSponge' || key === 'endDough' || key === 'endBatch') {
+                      if (row.isBreak) {
+                        value = '—';
+                      } else if (key === 'endBatch') {
+                        const rawEb = row.endBatch;
+                        if (rawEb == null || rawEb === '') value = '—';
+                        else if (scheduleAlignedDisplay) {
+                          value = (
+                            <SchedulingStackCell stack={schedulingTimeStackFromRowHm(row, 'endBatch')} />
+                          );
+                        } else value = rawEb;
+                      } else if (scheduleAlignedDisplay && isLegacyProcessSectionId(sectionId)) {
+                        const anchor = batchScheduleAnchorMs(row);
+                        if (anchor == null) {
+                          value = '—';
+                        } else if (key === 'startSponge') {
+                          const off = getProcessWindowStartOffsetMinutes(row, sectionId);
+                          value =
+                            off === null ? (
+                              '—'
+                            ) : (
+                              <SchedulingStackCell stack={schedulingTimeStackFromMs(anchor + off * 60000)} />
+                            );
+                        } else {
+                          const off = getProcessWindowEndOffsetMinutes(row, sectionId);
+                          value =
+                            off === null ? (
+                              '—'
+                            ) : (
+                              <SchedulingStackCell stack={schedulingTimeStackFromMs(anchor + off * 60000)} />
+                            );
+                        }
+                      } else if (scheduleAlignedDisplay) {
+                        const raw = row[key];
+                        if (raw == null || raw === '') value = '—';
+                        else
+                          value = (
+                            <SchedulingStackCell stack={schedulingTimeStackFromRowHm(row, key)} />
+                          );
+                      } else {
+                        value = row[key] ?? '—';
+                      }
+                    } else if (key === 'soCoExcess') {
+                      value = displaySoCoExcessForTable(row);
                     } else if (key === 'capacity') {
                       value = getCapacityForProduct(row.product, row.productionLineId) ?? row[key] ?? '—';
                     } else if (key === 'doughWeightKg') {
-                      value = getDoughWeightKgForProduct(row.product, row.productionLineId) != null ? `${getDoughWeightKgForProduct(row.product, row.productionLineId)} kg` : '—';
+                      value =
+                        getDoughWeightKgForProduct(row.product, row.productionLineId) != null
+                          ? `${getDoughWeightKgForProduct(row.product, row.productionLineId)} kg`
+                          : '—';
                     } else {
                       value = row[key] ?? '—';
                     }
+                    const scheduleTimeCol = scheduleAlignedDisplay && timeLikeKeys.has(key);
+                    const isScheduleStackTimeCell =
+                      scheduleAlignedDisplay &&
+                      !row.isBreak &&
+                      (key === 'startSponge' || key === 'endDough' || key === 'endBatch');
+                    const cellClass = [
+                      'py-2 sm:py-2.5 px-3 sm:px-4 text-gray-800 text-inherit',
+                      key === 'product' ? 'whitespace-nowrap' : '',
+                      key === 'skuId' ? 'tabular-nums whitespace-nowrap' : '',
+                      scheduleTimeCol && !isScheduleStackTimeCell ? 'tabular-nums whitespace-nowrap' : '',
+                    ]
+                      .filter(Boolean)
+                      .join(' ');
                     return (
-                      <td key={key} className="py-2 sm:py-2.5 px-3 sm:px-4 text-gray-800 text-inherit">
+                      <td key={key} className={cellClass}>
                         {value}
                       </td>
                     );

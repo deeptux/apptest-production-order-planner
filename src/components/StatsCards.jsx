@@ -30,19 +30,26 @@ function nextDay(dateStr) {
 
 const shouldTruncateLabel = (text) => String(text).length > 18;
 
-export default function StatsCards() {
+export default function StatsCards({ filterProductionLineId }) {
   const { rows, planDate } = usePlan();
 
-  const totalBatches = rows.length;
-  const totalOutput = rows.reduce((sum, r) => sum + (Number(r.theorOutput) ?? Number(r.soQty) ?? 0), 0);
-  const sortedByStart = [...rows].sort((a, b) => {
+  const filteredRows = filterProductionLineId
+    ? rows.filter((r) => r.productionLineId === filterProductionLineId)
+    : rows;
+
+  const totalBatches = filteredRows.length;
+  const totalOutput = filteredRows.reduce(
+    (sum, r) => sum + (Number(r.theorOutput) ?? Number(r.soQty) ?? 0),
+    0
+  );
+  const sortedByStart = [...filteredRows].sort((a, b) => {
     const d = (a.date || '').localeCompare(b.date || '');
     if (d !== 0) return d;
     return parseTimeToMinutes(a.startSponge) - parseTimeToMinutes(b.startSponge);
   });
   const firstStartRow = sortedByStart.length ? sortedByStart[0] : null;
   const firstStart = firstStartRow ? `${formatDateStr(firstStartRow.date)} ${formatTime(firstStartRow.startSponge)}` : '—';
-  const withEnd = rows.map((r) => {
+  const withEnd = filteredRows.map((r) => {
     const startM = parseTimeToMinutes(r.startSponge);
     const endM = parseTimeToMinutes(r.endBatch);
     const endDate = endM <= startM && r.endBatch !== r.startSponge ? nextDay(r.date || '') : (r.date || '');

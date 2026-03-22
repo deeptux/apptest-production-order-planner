@@ -10,10 +10,7 @@ function planTable() {
   return supabase.schema(SUPABASE_SCHEMA).from('plan');
 }
 
-/**
- * List override requests, optionally filtered by status.
- * @param {{ status?: 'pending' | 'approved' | 'rejected' }} opts
- */
+// opts.status filters pending | approved | rejected if you pass it
 export async function listOverrides(opts = {}) {
   if (!supabase) return [];
   let q = overridesTable()
@@ -30,10 +27,7 @@ export async function listOverrides(opts = {}) {
   return data ?? [];
 }
 
-/**
- * Create an override request from a station.
- * @param {{ station_id: string, payload?: object, requested_by?: string }}
- */
+// station_id must be one of VALID_STATIONS or insert gets skipped
 export async function createOverride({ station_id, payload = {}, requested_by }) {
   if (!supabase) return { ok: false, id: null };
   if (!VALID_STATIONS.includes(station_id)) return { ok: false, id: null };
@@ -52,11 +46,7 @@ export async function createOverride({ station_id, payload = {}, requested_by })
   return { ok: true, id: data?.id };
 }
 
-/**
- * Approve an override request. Optionally pass plan update to apply.
- * @param {string} overrideId
- * @param {{ decided_by?: string, plan_date?: string, rows?: array }} opts
- */
+// if opts includes plan_date + rows we also PATCH the latest plan row (supervisor flow)
 export async function approveOverride(overrideId, opts = {}) {
   if (!supabase) return { ok: false };
   const { error: updateError } = await overridesTable()
@@ -85,9 +75,6 @@ export async function approveOverride(overrideId, opts = {}) {
   return { ok: true };
 }
 
-/**
- * Reject an override request.
- */
 export async function rejectOverride(overrideId, decided_by) {
   if (!supabase) return { ok: false };
   const { error } = await overridesTable()
@@ -104,10 +91,7 @@ export async function rejectOverride(overrideId, decided_by) {
   return { ok: true };
 }
 
-/**
- * Subscribe to override_requests table changes. Calls onEvent when inserts/updates happen.
- * Returns unsubscribe function.
- */
+// supabase realtime — remember to call the returned unsub on unmount
 export function subscribeOverrides(onEvent) {
   if (!supabase || !onEvent) return () => {};
   const channel = supabase

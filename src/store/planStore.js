@@ -1,7 +1,4 @@
-/**
- * Plan store: single source of truth for plan state.
- * Rows are aligned with Production page (productionLineId, capacity from line) and Recipe page (procTime from recipe per line).
- */
+// Plan rows live here. productionLineId + capacity come from Production; proc times come from Recipe per line.
 import { getPlan, updatePlan } from '../api/plan';
 import { isSupabaseConfigured } from '../lib/supabase';
 import { getRecipesForLine, getTotalProcessMinutesForLine } from '../store/recipeStore';
@@ -18,11 +15,11 @@ function parsePlanDate(v) {
 }
 
 function getInitialPlanDate() {
-  // Default plan date to "today" when the store is first loaded.
+  // first time we boot, scheduling date = today
   return new Date();
 }
 
-/** Return YYYY-MM-DD for storage and date inputs. */
+// normalize dates to YYYY-MM-DD for inputs + localStorage
 function toDateString(v) {
   if (!v) return '';
   const d = v instanceof Date ? v : new Date(v);
@@ -33,7 +30,7 @@ function toDateString(v) {
   return `${y}-${m}-${day}`;
 }
 
-/** Theoretical Output = SO-CO Excess + Exchange for LOSS + Excess + Samples (all in pieces). */
+// pieces: SO-CO + exch loss + excess + samples (formula from the spec / spreadsheet side)
 export function computeTheoreticalOutput(row) {
   const soCo = Number(row.soCoExcess) || 0;
   const loss = Number(row.exchangeForLoss) || 0;
@@ -42,12 +39,46 @@ export function computeTheoreticalOutput(row) {
   return soCo + loss + excess + samples;
 }
 
+// one row's SO-CO field — must match normalizeRow() logic.
+// gotcha: if user only entered Total Qty and we split batches, row 0 often has soCoExcess=0 and batch qty = yield;
+// follow-up rows literally store pieceCount in soCoExcess. Don't replace 0 with full soQty in the UI.
+export function computeSoCoExcessFromRawRow(r) {
+  const soQty = Number(r?.soQty) || 0;
+  const salesOrder =
+    r?.salesOrder !== undefined && r.salesOrder !== '' ? Number(r.salesOrder) : undefined;
+  const carryOverExcess = Number(r?.carryOverExcess) || 0;
+  return r?.soCoExcess !== undefined
+    ? Number(r.soCoExcess)
+    : salesOrder !== undefined && !Number.isNaN(salesOrder)
+      ? Math.max(0, salesOrder - carryOverExcess)
+      : soQty;
+}
+
+// tables skip SO-CO for break rows (return null -> render em dash)
+export function resolveSoCoExcessForDisplay(r) {
+  if (!r || r.isBreak) return null;
+  return computeSoCoExcessFromRawRow(r);
+}
+
+// on save from Scheduling edit modal: if they typed a sales order, persist SO minus carry.
+// if no sales order, keep whatever computeSoCoExcessFromRawRow says (so batch 2+ don't all get wiped to 0)
+export function soCoExcessForPersistedRow(r) {
+  const salesPayload =
+    r?.salesOrder !== undefined && r.salesOrder !== '' && !Number.isNaN(Number(r.salesOrder))
+      ? Number(r.salesOrder)
+      : undefined;
+  if (salesPayload !== undefined && !Number.isNaN(salesPayload)) {
+    return Math.max(0, salesPayload - (Number(r?.carryOverExcess) || 0));
+  }
+  return computeSoCoExcessFromRawRow(r);
+}
+
 function normalizeRow(r) {
   const lineId = r.productionLineId || getLines()[0]?.id || 'line-loaf';
   const soQty = Number(r.soQty) || 0;
   const salesOrder = r.salesOrder !== undefined && r.salesOrder !== '' ? Number(r.salesOrder) : undefined;
   const carryOverExcess = Number(r.carryOverExcess) || 0;
-  const soCoExcess = r.soCoExcess !== undefined ? Number(r.soCoExcess) : (salesOrder !== undefined && !Number.isNaN(salesOrder) ? Math.max(0, salesOrder - carryOverExcess) : soQty);
+  const soCoExcess = computeSoCoExcessFromRawRow(r);
   const exchangeForLoss = Number(r.exchangeForLoss) || 0;
   const excess = Number(r.excess) || 0;
   const samples = r.samples !== undefined ? Number(r.samples) : 2;
@@ -110,7 +141,7 @@ let getSkipRef = () => ({ current: false });
 
 const listeners = new Set();
 
-/** Cached snapshot so getSnapshot returns the same reference when state has not changed (required by useSyncExternalStore). */
+// useSyncExternalStore: if nothing changed, getSnapshot() should return the *same* object ref or React gets upset
 let cachedSnapshot = null;
 
 function buildSnapshot() {
@@ -155,7 +186,7 @@ export function insertBatchBreakWithReflow(payload) {
   if (endM <= startM) return { success: false, error: 'Batch Break End must be after Batch Break Start.' };
   const duration = endM - startM;
 
-  // Snap / conflict against existing schedule on this date (same as batch insert behavior, but without product requirements).
+  // snap to grid / detect overlap — same idea as inserting a batch, but breaks don't need a product picked
   const insertStartMs = new Date(dateStr + 'T' + startSponge).getTime();
   const lineRows = state.rows.filter((r) => r.productionLineId === lineId && (r.date || '') === dateStr);
   const starts = lineRows
@@ -216,7 +247,7 @@ export function insertBatchBreakWithReflow(payload) {
       .map((x) => x.r.id)
   );
 
-  // Reflow affected rows after the break.
+  // push everything that started after the break forward
   const staggerMinutes = getStaggerMinutesForLine(lineId);
   const affectedRows = lineRows
     .filter((r) => affectedSet.has(r.id))
@@ -321,7 +352,7 @@ export function previewSwapOrderBetweenRows(rowIdA, rowIdB) {
   if (posA === -1 || posB === -1) return { canSwap: false, reason: 'Row not in line ordering' };
   const crossDay = (slots[posA]?.date || '') !== (slots[posB]?.date || '');
 
-  // Simulate the same reflow as swapOrderBetweenRows to count impacts.
+  // dry-run the swap reflow so the UI can show how many rows would move
   [ids[posA], ids[posB]] = [ids[posB], ids[posA]];
   const startPos = Math.min(posA, posB);
   const byId = new Map(lineRows.map((x) => [x.r.id, x.r]));
@@ -496,10 +527,7 @@ export function hydrateFromApi(data) {
   emit();
 }
 
-/**
- * Hydrate rows from localStorage cache (offline fallback).
- * This is used when Supabase is configured but temporarily unreachable.
- */
+// Supabase configured but fetch failed? fall back to whatever was in localStorage
 export function hydrateFromLocalStorage() {
   const rows = getInitialRows();
   state = {
@@ -510,7 +538,7 @@ export function hydrateFromLocalStorage() {
   emit();
 }
 
-/** Clear local cached rows (authoritative Supabase sync). */
+// after a good server sync, wipe stale local copy
 export function clearLocalRowsCache() {
   try {
     localStorage.removeItem(PLAN_ROWS_STORAGE_KEY);
@@ -535,7 +563,7 @@ export function setRows(updater) {
   emit();
 }
 
-/** Update all plan rows that reference a product by its previous name (e.g. after renaming a recipe). */
+// recipe rename in UI -> patch every row that still had the old product string
 export function updateProductNameInRows(oldProductName, newProductName) {
   const oldName = (oldProductName || '').trim();
   const newName = (newProductName || '').trim();
@@ -555,18 +583,14 @@ function ordinal(n) {
   return n + (s[(v - 20) % 10] || s[v] || s[0]);
 }
 
-/**
- * Compute Order Batch (per line per date: 1st, 2nd, 3rd batch on that line that day) and
- * Line Batch (legacy: same as Order Batch; kept for backward compatibility).
- * @param {Array} rows - Plan rows
- * @returns {{ orderBatch: Record<string, string>, lineBatch: Record<string, string> }}
- */
+// Order batch = 1st/2nd/3rd... by start sponge time, scoped to (line, date).
+// lineBatch map is the same numbers — old name, didn't want to break anything that still reads it.
 export function getOrderBatchAndLineBatch(rows) {
   const orderBatch = {};
   const lineBatch = {};
   if (!Array.isArray(rows) || rows.length === 0) return { orderBatch, lineBatch };
 
-  // Order Batch: by start time within (productionLineId, date) — 1st = earliest Start Sponge that day on that line.
+  // sort by start sponge within each line+day bucket
   const byLineDate = {};
   rows.forEach((r) => {
     const key = `${r.productionLineId || ''}\t${r.date || ''}`;
@@ -587,7 +611,7 @@ export function getOrderBatchAndLineBatch(rows) {
   return { orderBatch, lineBatch };
 }
 
-/** Get the latest batch end (date + time) for a line, for validation. Returns { date, endBatch } in ms, or null. */
+// newest endBatch on a line (used to block "start before previous batch finished" type errors). { date, endBatch, endMs } or null
 export function getLatestBatchEndForLine(lineId) {
   const lineRows = state.rows.filter((r) => r.productionLineId === lineId);
   if (lineRows.length === 0) return null;
@@ -690,6 +714,7 @@ function buildNewRowsFromModal(payload, createdAtMs) {
     remaining -= pieceCount;
     const rowSoQty = useTotalQtyForBatches ? soQty : (i === 0 ? (payload.soQty !== undefined && payload.soQty !== '' ? Number(payload.soQty) : pieceCount) : pieceCount);
     const rowSalesOrder = i === 0 ? salesOrderPayload : undefined;
+    // i===0: whatever came from modal (qty-only path => often 0). i>0: we stuff pieceCount into soCoExcess — yeah it's weird but matches how rows were always built
     const rowSoCoExcess = i === 0 ? soCoExcess : pieceCount;
     const rowExchangeForLoss = i === 0 ? exchangeForLoss : 0;
     const rowExcess = i === 0 ? excess : 0;
@@ -773,8 +798,7 @@ export function previewInsertBatchesWithReflow(payload) {
     snappedDate = firstAtOrAfter.row.date;
     snappedStartSponge = firstAtOrAfter.row.startSponge;
   } else if (latest && insertStartMs <= latest.endMs) {
-    // If the user typed a time that falls before the overall latest end (conflict),
-    // but there is no later start on this date, snap to the latest end slot.
+    // typed time is before the last batch finishes but there's no "next" start slot — shove them to end of the last batch
     snappedStartMs = latest.endMs;
     snappedDate = latest.date;
     snappedStartSponge = latest.endBatch;
@@ -819,7 +843,7 @@ export function insertBatchesWithReflow(payload) {
   const affectedSet = new Set(preview?.affectedRowIds || []);
   const staggerMinutes = getStaggerMinutesForLine(lineId);
 
-  // Reflow affected rows on this line (push forward) after inserting the new rows group.
+  // anything starting at/after the insert point gets bumped along the pipeline
   const lineRows = state.rows.filter((r) => r.productionLineId === lineId && (r.date || '') === dateStr);
   const affectedRows = lineRows
     .filter((r) => affectedSet.has(r.id))
@@ -829,11 +853,11 @@ export function insertBatchesWithReflow(payload) {
     })
     .sort((a, b) => a.startMs - b.startMs);
 
-  // With "snap to nearest slot", reflow anchor is the inserted group's last row.
+  // reflow chains from the *last* row of what we just inserted (not the first)
   const insertedGroupLast = newRows[newRows.length - 1] || null;
   const reflowBase = insertedGroupLast;
 
-  // Compute the starting point for the first affected row.
+  // first row we're about to shove: starts after reflowBase's end (or stagger from its start, depending branch below)
   let currentDate = reflowBase ? (reflowBase.date || dateStr) : dateStr;
   let prevStart = reflowBase ? (reflowBase.startSponge || startSponge) : startSponge;
   let prevEndBatch = reflowBase ? (reflowBase.endBatch || startSponge) : startSponge;
@@ -871,10 +895,8 @@ export function insertBatchesWithReflow(payload) {
     prevEndBatch = moved.endBatch;
   }
 
-  // Build final rows array with minimal disruption:
-  // - Keep all non-line rows as-is
-  // - Keep unaffected line rows as-is (including earlier rows before snapped slot)
-  // - Replace the first affected occurrence with: inserted new rows + updated affected rows, then skip all original affected rows
+  // stitch arrays without nuking unrelated lines: other lines untouched; on this line, rows before the conflict stay put;
+  // first time we hit an affected id we splice in [new rows][reflowed affected...] and skip the rest of the old affected ids
   const updatedAffectedOrdered = affectedRows.map((x) => updatedAffectedById.get(x.row.id)).filter(Boolean);
   const nextAll = [];
   let inserted = false;
@@ -907,12 +929,9 @@ export function insertBatchesWithReflow(payload) {
   return { success: true, rowsAdded: newRows.length, affectedMoved: updatedAffectedOrdered.length };
 }
 
-/**
- * Add one or more batch rows from modal input. Validates: when plan date is today, batch start >= now;
- * batch start must be after latest batch end on same line. Creates ceil(theorOutput/capacity) rows.
- * @param {Object} payload - { productionLineId, date (YYYY-MM-DD), startSponge (HH:MM), product, salesOrder?, soQty, soCoExcess, exchangeForLoss, excess, samples, theorOutputOverride? }
- * @returns {{ success: boolean, error?: string, rowsAdded?: number }}
- */
+// legacy append path (no reflow): checks "today => not in past" and "start after last end on line".
+// row count = ceil(theorOutput/capacity) OR total-qty / yield path inside buildNewRowsFromModal
+// payload shape: productionLineId, date, startSponge, product, optional sales/soQty/soCo/etc.
 export function addBatchesFromModal(payload) {
   const createdAtMs = Date.now();
   const build = buildNewRowsFromModal(payload, createdAtMs);
@@ -996,11 +1015,8 @@ export function reorderRows(fromIndex, toIndex) {
   emit();
 }
 
-/**
- * Reorder schedule sequence on a production line: swap two rows' positions in the line timeline,
- * then reflow Start Sponge / End Dough / End Batch forward using pipelining rules.
- * Rows must belong to the same production line. Dates are allowed to change via rollover during reflow.
- */
+// swap two slots on the same line's timeline, then re-run start/end times with stagger or back-to-back rules.
+// dates can roll to next day if midnight wraps — that's intentional
 export function swapOrderBetweenRows(rowIdA, rowIdB) {
   const idxA = state.rows.findIndex((r) => r.id === rowIdA);
   const idxB = state.rows.findIndex((r) => r.id === rowIdB);
@@ -1035,7 +1051,7 @@ export function swapOrderBetweenRows(rowIdA, rowIdB) {
   const staggerMinutes = getStaggerMinutesForLine(lineId);
 
   const updatedById = new Map();
-  // Seed prevStart/prevEndBatch from the row *before* the first changed position (unchanged history).
+  // anchor from the row immediately before the swap window so we don't invent a fake gap
   let currentDate = slots[startPos]?.date || slots[0]?.date || '';
   let prevStart = slots[startPos]?.startSponge || slots[0]?.startSponge || '';
   let prevEndBatch = prevStart;
@@ -1051,13 +1067,12 @@ export function swapOrderBetweenRows(rowIdA, rowIdB) {
   if (!currentDate || !prevStart) return;
 
   ids.forEach((id, i) => {
-    if (i < startPos) return; // unchanged portion stays as-is
+    if (i < startPos) return; // left of swap: leave alone
     const original = byId.get(id);
     if (!original) return;
 
-    // Respect existing day boundaries in the schedule.
-    // If the original slots jump to a different date, start a new anchored segment there
-    // (so "tomorrow 4:56 PM" stays tomorrow unless it naturally rolls over by midnight).
+    // if the pre-swap schedule already had a row on the next calendar day, don't merge it onto yesterday's reflow
+    // (e.g. tomorrow 4:56pm should stay tomorrow until a real midnight rollover happens)
     if (i > startPos) {
       const prevSlot = slots[i - 1];
       const thisSlot = slots[i];
@@ -1068,14 +1083,13 @@ export function swapOrderBetweenRows(rowIdA, rowIdB) {
       }
     }
 
-    // First changed position: take the slot's existing start (this is the "swap into that time" behavior).
-    // Subsequent positions: reflow forward.
+    // first swapped index keeps its wall clock; later indices are derived from pipeline math
     let startSponge = '';
     if (i === startPos) {
       const slot = slots[startPos];
       currentDate = slot?.date || currentDate;
       startSponge = slot?.startSponge || prevStart;
-      // Reset segment anchor at the first changed slot.
+      // new anchor for the segment we're rebuilding
       prevStart = startSponge;
       prevEndBatch = startSponge;
     } else if (staggerMinutes > 0) {
@@ -1083,7 +1097,7 @@ export function swapOrderBetweenRows(rowIdA, rowIdB) {
         const prevRefId = ids[i - 1];
         const prevMoved = updatedById.get(prevRefId);
         if (prevMoved?.isBreak && prevMoved.endBatch) {
-          // Same as insertBatchBreakWithReflow: first row after a break starts at break end, not breakStart + stagger.
+          // match insertBatchBreakWithReflow — production resumes at break end, not breakStart+stagger
           startSponge = prevMoved.endBatch;
         } else {
           startSponge = addMinutesToTime(prevStart, staggerMinutes);
@@ -1126,10 +1140,7 @@ export function swapOrderBetweenRows(rowIdA, rowIdB) {
   emit();
 }
 
-/**
- * Delete a batch by row id.
- * @returns {{ success: boolean, error?: string }}
- */
+// returns { success, error? } — error if id missing
 export function deleteBatch(rowId) {
   const next = state.rows.filter((r) => r.id !== rowId);
   if (next.length === state.rows.length) {

@@ -8,11 +8,11 @@ const SECTIONS = [
   { id: 'packaging', label: 'Packaging' },
 ];
 
-export default function SectionTabs({ value, onValueChange, children }) {
+export default function SectionTabs({ value, onValueChange, sections = SECTIONS, children }) {
   return (
     <Tabs.Root value={value} onValueChange={onValueChange} className="w-full">
       <Tabs.List className="flex gap-1 border-b border-gray-200 bg-surface-card-warm rounded-t-card overflow-x-auto pt-2 px-2">
-        {SECTIONS.map(({ id, label }) => (
+        {sections.map(({ id, label }) => (
           <Tabs.Trigger
             key={id}
             value={id}

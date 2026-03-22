@@ -4,10 +4,7 @@ function configTable() {
   return supabase.schema(SUPABASE_SCHEMA).from('config');
 }
 
-/**
- * Fetch a config payload by key.
- * Returns { key, payload } or null.
- */
+// generic key/value bag in supabase (recipes, lines, ...)
 export async function getConfig(key) {
   if (!supabase || !key) return null;
   const { data, error } = await configTable()
@@ -21,11 +18,6 @@ export async function getConfig(key) {
   return data;
 }
 
-/**
- * Upsert a config payload by key.
- * @param {string} key
- * @param {object} payload
- */
 export async function updateConfig(key, payload) {
   if (!supabase || !key) return { ok: false };
   const { error } = await configTable()

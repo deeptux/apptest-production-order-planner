@@ -9,10 +9,8 @@ export const NAV_ITEMS = [
   { id: 'help', label: 'Help', icon: HelpCircle },
 ];
 
-/**
- * Shared nav list and decorative wheat. Used by Sidebar (desktop) and SidebarDrawer (Sheet on mobile/tablet).
- * onClose: called when a nav item is clicked (e.g. close the drawer on mobile).
- */
+// nav buttons + wheat graphic — desktop sidebar + mobile drawer both use this.
+// onClose optional (drawer passes it to slam shut after navigation)
 export function NavContent({ currentPage, onNavigate, onClose, collapsed = false }) {
   return (
     <>

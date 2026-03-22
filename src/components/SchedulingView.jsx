@@ -5,14 +5,39 @@ import * as Tabs from '@radix-ui/react-tabs';
 import * as Tooltip from '@radix-ui/react-tooltip';
 import { usePlan } from '../context/PlanContext';
 import { useSnackbar } from '../context/SnackbarContext';
-import { computeTheoreticalOutput, getLatestBatchEndForLine, getOrderBatchAndLineBatch } from '../store/planStore';
+import {
+  computeTheoreticalOutput,
+  getLatestBatchEndForLine,
+  getOrderBatchAndLineBatch,
+  soCoExcessForPersistedRow,
+} from '../store/planStore';
+import { displaySoCoExcessForTable } from '../utils/planDisplay';
 import { recomputeEndTimesForRow, parseTimeToMinutes } from '../utils/stageDurations';
 import { getProductionStatus } from '../utils/productionStatus';
 import { getRecipesForLine, getTotalProcessMinutes, getTotalProcessMinutesForLine } from '../store/recipeStore';
 import { getCapacityForProduct, getDoughWeightKgForProduct, getGramsPerUnitForProduct, getTotalDoughWeightKgForProduct, getYieldForProduct } from '../store/capacityProfileStore';
 import { getLines, getLineById } from '../store/productionLinesStore';
+import { DEMO_APP_NOTICE_TITLE, DEMO_APP_NOTICE_BODY } from '../constants/demoNotice';
 
 const FIELDS_THAT_TRIGGER_AUTO_ADJUST = ['startSponge', 'product'];
+
+// demo mode compares these fields to block illegal edits (also break end for time blockers)
+function snapshotRestrictedEditFields(r) {
+  const so = r.salesOrder;
+  const salesNorm =
+    so !== undefined && so !== '' && !Number.isNaN(Number(so)) ? String(Number(so)) : '';
+  const qty = r.soQty;
+  const qtyNorm =
+    qty === '' || qty === undefined || qty === null || Number.isNaN(Number(qty))
+      ? ''
+      : String(Number(qty));
+  return {
+    startSponge: String(r.startSponge ?? '').trim(),
+    soQty: qtyNorm,
+    salesOrder: salesNorm,
+    endBatch: String(r.endBatch ?? '').trim(),
+  };
+}
 
 export default function SchedulingView() {
   const { planDate, setPlanDate, rows, setRows, reorderRows, insertBatchBreakWithReflow, previewSwapOrderBetweenRows, swapOrderBetweenRows, addBatch, addBatchesFromModal, previewInsertBatchesWithReflow, insertBatchesWithReflow, deleteBatch } = usePlan();
@@ -53,7 +78,7 @@ export default function SchedulingView() {
 
   const formatDateCreated = useCallback((isoOrYmd) => {
     if (!isoOrYmd || typeof isoOrYmd !== 'string') return '—';
-    // Accept ISO or YYYY-MM-DD
+    // created column accepts full ISO or plain date
     const d = isoOrYmd.includes('T') ? new Date(isoOrYmd) : new Date(`${isoOrYmd}T00:00:00`);
     if (Number.isNaN(d.getTime())) return isoOrYmd;
     return new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).format(d);
@@ -65,7 +90,7 @@ export default function SchedulingView() {
       const t = new Date(iso).getTime();
       if (!Number.isNaN(t)) return t;
     }
-    // Fallback: row.id often starts with Date.now() ms
+    // old rows: id prefix was Date.now()
     const id = String(row?.id ?? '');
     const m = id.match(/^(\d{10,13})/);
     if (m) {
@@ -114,12 +139,14 @@ export default function SchedulingView() {
     if (!startDateStr) return '';
     const startMins = parseTimeToMinutes(startTimeStr);
     const endMins = parseTimeToMinutes(endTimeStr);
-    // If end time is earlier than start time, it crossed midnight -> next day
+    // end < start on same calendar row => rolled past midnight
     if (endTimeStr && startTimeStr && endMins < startMins) return addDaysToDateStr(startDateStr, 1);
     return startDateStr;
   }, [addDaysToDateStr]);
   const [editingRowId, setEditingRowId] = useState(null);
   const [draftRow, setDraftRow] = useState(null);
+  const [editBaseline, setEditBaseline] = useState(null);
+  const [demoEditNoticeOpen, setDemoEditNoticeOpen] = useState(false);
   const [addBatchModalOpen, setAddBatchModalOpen] = useState(false);
   const [addBatchTab, setAddBatchTab] = useState('quantity'); // 'quantity' | 'sales' | 'others'
   const [addBatchForm, setAddBatchForm] = useState({
@@ -238,7 +265,7 @@ export default function SchedulingView() {
   const planDateStr = formatDateInput(planDate);
   const isFilterAll = !selectedLineId || selectedLineId === 'all';
   const rowsByLine = isFilterAll ? rows : rows.filter((r) => r.productionLineId === selectedLineId);
-  // When showAllDates: no date filter (all scheduled batches by line). Otherwise filter by plan date.
+  // "all dates" toggle = ignore planDate filter, still scoped by line
   const displayedRows = showAllDates || !planDateStr
     ? rowsByLine
     : rowsByLine.filter((r) => r.date === planDateStr);
@@ -280,9 +307,7 @@ export default function SchedulingView() {
       return ms;
     };
 
-    // Default view sort:
-    // - created: DateTime Created desc (latest first)
-    // - schedule: true schedule order (Start Sponge asc)
+    // created view = newest createdAt first; schedule view = real timeline by start sponge
     const scheduleCmp = (a, b) => {
       const c = getStartMs(a) - getStartMs(b);
       if (c !== 0) return c;
@@ -323,7 +348,7 @@ export default function SchedulingView() {
   }, []);
 
   const handleSortClick = useCallback((key) => {
-    // In Schedule view, Start Sponge uses two-state sorting only (asc/desc).
+    // schedule mode: start sponge column only toggles asc/desc (no 3-state)
     if (viewMode === 'schedule' && key === 'startSponge') {
       setDateTimeSort((prev) => {
         if (!prev || prev.key !== key) return { key, dir: 'asc' };
@@ -363,9 +388,7 @@ export default function SchedulingView() {
     });
     const out = {};
     Object.keys(bySku).forEach((sku) => {
-      // Stable identity order for SKU Batch Order:
-      // keep suffix attached to the original row identity (creation sequence),
-      // so swapping schedule order does not rewrite SKU Batch Order labels.
+      // SKU batch suffix is tied to createdAt/id order — sorting the grid must NOT reshuffle 1st/2nd labels
       const list = [...bySku[sku]].sort((a, b) => {
         const aMs = getCreatedAtMs(a) ?? 0;
         const bMs = getCreatedAtMs(b) ?? 0;
@@ -553,6 +576,7 @@ export default function SchedulingView() {
     const { endDough, endBatch } = recomputeEndTimesForRow(draft);
     draft.endDough = endDough;
     draft.endBatch = endBatch;
+    setEditBaseline(snapshotRestrictedEditFields(row));
     setDraftRow(draft);
   }, [lineIdForNewBatch]);
 
@@ -590,6 +614,7 @@ export default function SchedulingView() {
   const cancelEdit = useCallback(() => {
     setEditingRowId(null);
     setDraftRow(null);
+    setEditBaseline(null);
   }, []);
 
   const handleDeleteClick = useCallback((row) => {
@@ -602,6 +627,18 @@ export default function SchedulingView() {
 
   const confirmSave = useCallback(() => {
     if (!draftRow) return;
+    if (editBaseline) {
+      const current = snapshotRestrictedEditFields(draftRow);
+      const restrictedChanged =
+        current.startSponge !== editBaseline.startSponge ||
+        current.soQty !== editBaseline.soQty ||
+        current.salesOrder !== editBaseline.salesOrder ||
+        (!!draftRow.isBreak && current.endBatch !== editBaseline.endBatch);
+      if (restrictedChanged) {
+        setDemoEditNoticeOpen(true);
+        return;
+      }
+    }
     const lineId = draftRow.productionLineId || lineIdForNewBatch;
     if (draftRow.isBreak) {
       const startM = parseTimeToMinutes(draftRow.startSponge);
@@ -621,16 +658,18 @@ export default function SchedulingView() {
       setRows((prev) => prev.map((r) => (r.id === toSave.id ? { ...toSave } : r)));
       setEditingRowId(null);
       setDraftRow(null);
+      setEditBaseline(null);
       return;
     }
-    const soCoExcess = Math.max(0, (Number(draftRow.salesOrder) || 0) - (Number(draftRow.carryOverExcess) || 0));
+    const soCoExcess = soCoExcessForPersistedRow(draftRow);
     const toSave = { ...draftRow, productionLineId: lineId, soCoExcess };
     setRows((prev) =>
       prev.map((r) => (r.id === toSave.id ? { ...toSave } : r))
     );
     setEditingRowId(null);
     setDraftRow(null);
-  }, [draftRow, lineIdForNewBatch, setRows, showSnackbar]);
+    setEditBaseline(null);
+  }, [draftRow, editBaseline, lineIdForNewBatch, setRows, showSnackbar]);
 
   const getRowStartMs = useCallback((r) => {
     const d = (r?.date || '').split('T')[0];
@@ -904,7 +943,7 @@ export default function SchedulingView() {
                     <div><span className="font-medium text-gray-500">Total Quantity:</span> {row.soQty ?? '—'}</div>
                     <div><span className="font-medium text-gray-500">Batch Qty (Quantity of the Batch):</span> {row.theorOutput ?? '—'}</div>
                     <div><span className="font-medium text-gray-500">Sales Order:</span> {row.salesOrder ?? '—'}</div>
-                    <div><span className="font-medium text-gray-500">SO-CO Excess:</span> {row.soCoExcess ?? '—'}</div>
+                    <div><span className="font-medium text-gray-500">SO-CO Excess:</span> {displaySoCoExcessForTable(row)}</div>
                     <div><span className="font-medium text-gray-500">Exchange Loss:</span> {row.exchangeForLoss ?? '—'}</div>
                     <div><span className="font-medium text-gray-500">Excess:</span> {row.excess ?? '—'}</div>
                     <div><span className="font-medium text-gray-500">Samples:</span> {row.samples ?? '—'}</div>
@@ -933,7 +972,7 @@ export default function SchedulingView() {
                     }`}
                     onPointerEnter={(e) => {
                       if (e?.target?.closest?.('[data-no-row-tooltip="true"]')) return;
-                      // Hovering another row should close any "clicked" pinned details + highlight
+                      // hover different row -> drop the click-pinned tooltip state
                       if (clickedRowId && clickedRowId !== row.id) {
                         if (clickTimeoutRef.current) clearTimeout(clickTimeoutRef.current);
                         setClickedRowId(null);
@@ -1217,9 +1256,12 @@ export default function SchedulingView() {
                     <div>
                       <label className="block text-xs font-medium text-gray-600 mb-0.5">SO-CO Excess</label>
                       <div className="w-full border border-gray-200 rounded px-2 py-1.5 bg-gray-50 text-gray-700">
-                        {Math.max(0, (Number(r.salesOrder) || 0) - (Number(r.carryOverExcess) || 0))}
+                        {soCoExcessForPersistedRow(r)}
                       </div>
-                      <p className="text-xs text-gray-500 mt-0.5">Computed: Sales Order − Carry Over (read-only).</p>
+                      <p className="text-xs text-gray-500 mt-0.5">
+                        Read-only: if Sales Order is set → Sales Order − Carry Over; otherwise the stored value for this
+                        batch (e.g. 0 on the first row of a Total-Qty split, batch size on later rows). Matches Dashboard.
+                      </p>
                     </div>
                     <div>
                       <label className="block text-xs font-medium text-gray-600 mb-0.5">Exchange Loss</label>
@@ -1299,6 +1341,26 @@ export default function SchedulingView() {
               <button type="button" onClick={confirmSave} className="px-4 py-2 rounded-lg bg-primary text-white text-sm font-medium hover:bg-primary-dark">
                 Save
               </button>
+            </div>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
+
+      <Dialog.Root open={demoEditNoticeOpen} onOpenChange={setDemoEditNoticeOpen}>
+        <Dialog.Portal>
+          <Dialog.Overlay className="fixed inset-0 bg-black/50 z-[60]" />
+          <Dialog.Content className="fixed left-1/2 top-1/2 z-[61] w-full max-w-sm -translate-x-1/2 -translate-y-1/2 rounded-lg border border-gray-200 bg-white p-4 shadow-lg">
+            <Dialog.Title className="text-lg font-semibold text-gray-900">{DEMO_APP_NOTICE_TITLE}</Dialog.Title>
+            <Dialog.Description className="text-sm text-gray-600 mt-2">{DEMO_APP_NOTICE_BODY}</Dialog.Description>
+            <div className="mt-4 flex justify-end">
+              <Dialog.Close asChild>
+                <button
+                  type="button"
+                  className="px-4 py-2 rounded-lg bg-primary text-white text-sm font-medium hover:bg-primary-dark"
+                >
+                  OK
+                </button>
+              </Dialog.Close>
             </div>
           </Dialog.Content>
         </Dialog.Portal>

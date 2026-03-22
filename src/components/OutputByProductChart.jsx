@@ -20,9 +20,12 @@ function useIsDesktop() {
   return isDesktop;
 }
 
-export function OutputByProductChart({ maxRows }) {
+export function OutputByProductChart({ maxRows, filterProductionLineId }) {
   const { rows: fullRows } = usePlan();
-  const rows = typeof maxRows === 'number' && maxRows > 0 ? fullRows.slice(0, maxRows) : fullRows;
+  const lineFilteredRows = filterProductionLineId
+    ? fullRows.filter((r) => r.productionLineId === filterProductionLineId)
+    : fullRows;
+  const rows = typeof maxRows === 'number' && maxRows > 0 ? lineFilteredRows.slice(0, maxRows) : lineFilteredRows;
   const isDesktop = useIsDesktop();
 
   const data = rows.map((row) => ({

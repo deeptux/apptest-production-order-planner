@@ -5,7 +5,7 @@ function getStageDurationsForProduct(productName) {
   return getFromRecipe(productName) ?? getFromSku(productName);
 }
 
-/** Process order for cumulative "End Dough" (first process = Mixing, etc.). */
+// loaf line process chain — used when we sum minutes up to "end dough" for a given recipe step
 const END_DOUGH_ORDER = ['mixing', 'makeup-dividing', 'makeup-panning', 'baking', 'packaging'];
 const PROCESS_ID_TO_LEGACY_KEY = {
   'mixing': 'mixing',
@@ -15,7 +15,7 @@ const PROCESS_ID_TO_LEGACY_KEY = {
   'packaging': 'packaging',
 };
 
-/** Cumulative minutes from start through the given process (inclusive). Used for End Dough. */
+// running sum of stage minutes through the chosen process — drives "end dough" time on the schedule
 function getCumulativeMinutesUpToProcess(stages, processId) {
   const idx = END_DOUGH_ORDER.indexOf(processId);
   if (idx === -1) return stages.mixing ?? 0;
@@ -49,7 +49,7 @@ export function parseTimeToMinutes(str) {
   return (h % 24) * 60 + (m || 0);
 }
 
-/** Add minutes to "HH:MM" and return "HH:MM" (can cross midnight). */
+// wall clock add; wraps modulo 24h (we only return HH:MM so "next day" is handled elsewhere via date)
 export function addMinutesToTime(timeStr, minutes) {
   const total = parseTimeToMinutes(timeStr) + Number(minutes);
   const normalized = ((total % DAY_MINUTES) + DAY_MINUTES) % DAY_MINUTES;
@@ -96,7 +96,7 @@ export function computeStageDurations(totalMinutes) {
   };
 }
 
-/** Returns stage durations for this row: real SKU data when product is known, else ratio-based fallback. */
+// prefer recipe/SKU table minutes; if product missing, fake it from total time * STAGE_RATIOS
 export function computeStageDurationsForRow(row) {
   const sku = getStageDurationsForProduct(row.product);
   if (sku) return { ...sku };
@@ -104,11 +104,8 @@ export function computeStageDurationsForRow(row) {
   return computeStageDurations(total);
 }
 
-/**
- * Recompute endDough and endBatch from row's startSponge and process durations.
- * End Dough = end of the process selected in the recipe (e.g. Mixing → end of mixing; Makeup Panning → end of mixing + dividing + panning).
- * Returns { endDough, endBatch } as "HH:MM" or existing values if total minutes are invalid.
- */
+// endDough depends which process is flagged as "end dough" in the recipe (mixing only vs through panning etc).
+// endBatch is start + full pipeline. returns HH:MM; bails to existing row values if totals are garbage
 export function recomputeEndTimesForRow(row) {
   const stages = computeStageDurationsForRow(row);
   const total = stages.mixing + stages.makeupDividing + stages.makeupPanning + stages.baking + stages.packaging;
@@ -120,6 +117,74 @@ export function recomputeEndTimesForRow(row) {
   const endDough = addMinutesToTime(row.startSponge, endDoughMinutes);
   const endBatch = addMinutesToTime(row.startSponge, total);
   return { endDough, endBatch };
+}
+
+const STAGE_KEYS_ORDERED = ['mixing', 'makeupDividing', 'makeupPanning', 'baking', 'packaging'];
+
+// proc column for a tab: legacy ids (mixing, baking...) map straight to stage minutes.
+// custom line process lists that still match the 5 loaf ids in order -> same mapping.
+// anything else -> split total time evenly across N processes (best we can do)
+export function getProcMinutesForPlanSection(row, sectionId, sortedProcesses) {
+  const stages = computeStageDurationsForRow(row);
+  const legacyKey = PROCESS_ID_TO_LEGACY_KEY[sectionId];
+  if (legacyKey) {
+    const v = stages[legacyKey];
+    return v != null && !Number.isNaN(Number(v)) ? Number(v) : null;
+  }
+
+  const list = Array.isArray(sortedProcesses) ? sortedProcesses : [];
+  const n = list.length;
+  if (n === 0) return null;
+  const idx = list.findIndex((p) => p.id === sectionId);
+  if (idx < 0) return null;
+
+  const matchesLoafOrder =
+    n === END_DOUGH_ORDER.length && list.every((p, i) => p.id === END_DOUGH_ORDER[i]);
+  if (matchesLoafOrder) {
+    const k = STAGE_KEYS_ORDERED[idx];
+    const v = stages[k];
+    return v != null && !Number.isNaN(Number(v)) ? Number(v) : null;
+  }
+
+  const total =
+    STAGE_KEYS_ORDERED.reduce((s, k) => s + (Number(stages[k]) || 0), 0) || computeTotalMinutesForRow(row);
+  if (!total) return null;
+  return Math.max(1, Math.round(total / n));
+}
+
+export function isLegacyProcessSectionId(sectionId) {
+  return END_DOUGH_ORDER.includes(sectionId);
+}
+
+export function getProcessWindowStartOffsetMinutes(row, sectionId) {
+  if (!isLegacyProcessSectionId(sectionId)) return null;
+  const idx = END_DOUGH_ORDER.indexOf(sectionId);
+  const stages = computeStageDurationsForRow(row);
+  let sum = 0;
+  for (let i = 0; i < idx; i++) {
+    const key = PROCESS_ID_TO_LEGACY_KEY[END_DOUGH_ORDER[i]];
+    sum += Number(stages[key]) || 0;
+  }
+  return sum;
+}
+
+export function getProcessWindowEndOffsetMinutes(row, sectionId) {
+  if (!isLegacyProcessSectionId(sectionId)) return null;
+  const idx = END_DOUGH_ORDER.indexOf(sectionId);
+  const stages = computeStageDurationsForRow(row);
+  let sum = 0;
+  for (let i = 0; i <= idx; i++) {
+    const key = PROCESS_ID_TO_LEGACY_KEY[END_DOUGH_ORDER[i]];
+    sum += Number(stages[key]) || 0;
+  }
+  return sum;
+}
+
+export function getAlignedLegacyProcessProcMinutes(row, sectionId) {
+  const start = getProcessWindowStartOffsetMinutes(row, sectionId);
+  const end = getProcessWindowEndOffsetMinutes(row, sectionId);
+  if (start === null || end === null) return null;
+  return Math.max(0, Math.round(end - start));
 }
 
 export { DAY_MINUTES };
