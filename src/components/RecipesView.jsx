@@ -9,6 +9,7 @@ import {
   addRecipe,
   updateRecipe,
   deleteRecipe,
+  repairRecipesAfterLinesChange,
 } from '../store/recipeStore';
 import { getLines, getProcessesForLine, getMixingProfiles, getProfileTotalMinutes, updateProductNameInCapacityProfiles } from '../store/productionLinesStore';
 import { updateProductNameInRows } from '../store/planStore';
@@ -32,6 +33,7 @@ export default function RecipesView() {
     name: '',
     productionLineId: lines[0]?.id ?? '',
     processDurations: {},
+    processProfileIds: {},
     endDoughProcessId: 'mixing',
   });
   const [deleteConfirmId, setDeleteConfirmId] = useState(null);
@@ -39,18 +41,33 @@ export default function RecipesView() {
   const [profilePickerOpenKey, setProfilePickerOpenKey] = useState(null); // `${context}:${recipeId}:${procId}` | null
   const [profilePickerQuery, setProfilePickerQuery] = useState('');
   const profilePickerRef = useRef(null);
+  const profilePickerPanelRef = useRef(null);
   const [profilePickerBounds, setProfilePickerBounds] = useState(null); // { left, top, width } | null
 
   const refresh = useCallback(() => setRefreshTick((t) => t + 1), []);
 
   useEffect(() => {
+    // If lines/processes were edited or a line got deleted, repair recipes first.
+    repairRecipesAfterLinesChange();
+  }, [linesVersion]);
+
+  useEffect(() => {
+    if (!selectedLineId) return;
+    const stillExists = lines.some((l) => l.id === selectedLineId);
+    if (!stillExists) setSelectedLineId('');
+  }, [lines, selectedLineId]);
+
+  useEffect(() => {
     if (!profilePickerOpenKey) return undefined;
     const onDown = (e) => {
-      const root = profilePickerRef.current;
-      if (!root) return;
-      if (!root.contains(e.target)) {
+      const triggerRoot = profilePickerRef.current;
+      const panelRoot = profilePickerPanelRef.current;
+      const inTrigger = !!triggerRoot && triggerRoot.contains(e.target);
+      const inPanel = !!panelRoot && panelRoot.contains(e.target);
+      if (!inTrigger && !inPanel) {
         setProfilePickerOpenKey(null);
         setProfilePickerQuery('');
+        setProfilePickerBounds(null);
       }
     };
     document.addEventListener('mousedown', onDown);
@@ -117,6 +134,7 @@ export default function RecipesView() {
         {isOpen && (
           createPortal(
             <div
+              ref={profilePickerPanelRef}
               className="fixed z-[100] rounded-lg border border-gray-200 bg-white shadow-lg"
               style={{
                 left: profilePickerBounds?.left ?? 0,
@@ -178,6 +196,7 @@ export default function RecipesView() {
     setDraft({
       ...recipe,
       processDurations: { ...(recipe.processDurations || {}) },
+      processProfileIds: { ...(recipe.processProfileIds || {}) },
       endDoughProcessId: recipe.endDoughProcessId ?? 'mixing',
     });
   }, []);
@@ -186,7 +205,10 @@ export default function RecipesView() {
     setDraft((prev) => {
       if (!prev) return prev;
       const next = { ...prev, [field]: value };
-      if (field === 'productionLineId') next.processDurations = {};
+      if (field === 'productionLineId') {
+        next.processDurations = {};
+        next.processProfileIds = {};
+      }
       return next;
     });
   }, []);
@@ -207,6 +229,7 @@ export default function RecipesView() {
       name: newName,
       productionLineId: draft.productionLineId,
       processDurations: draft.processDurations,
+      processProfileIds: draft.processProfileIds,
       endDoughProcessId: draft.endDoughProcessId,
     });
     if (oldName && oldName !== newName) {
@@ -232,12 +255,15 @@ export default function RecipesView() {
       processDurations: addDraft.processDurations && Object.keys(addDraft.processDurations).length
         ? addDraft.processDurations
         : {},
+      processProfileIds: addDraft.processProfileIds && Object.keys(addDraft.processProfileIds).length
+        ? addDraft.processProfileIds
+        : {},
       endDoughProcessId: addDraft.endDoughProcessId || 'mixing',
     };
     addRecipe(toAdd);
     refresh();
     setAddOpen(false);
-    setAddDraft({ name: '', productionLineId: lines[0]?.id ?? '', processDurations: {}, endDoughProcessId: 'mixing' });
+    setAddDraft({ name: '', productionLineId: lines[0]?.id ?? '', processDurations: {}, processProfileIds: {}, endDoughProcessId: 'mixing' });
   }, [addDraft, lines, refresh]);
 
   const handleDelete = useCallback((id) => {
@@ -393,10 +419,10 @@ export default function RecipesView() {
                     {processesForColumns.map((proc) => {
                       const editProfiles = isEditing && editLineId ? getMixingProfiles(editLineId, proc.id) : [];
                       const currentMins = Number(pd[proc.id]) || 0;
-                      const hasExplicitProfile = editProfiles.some((p) => getProfileTotalMinutes(editLineId, proc.id, p.id) === currentMins);
-                      const selectedProfileId = hasExplicitProfile
-                        ? (editProfiles.find((p) => getProfileTotalMinutes(editLineId, proc.id, p.id) === currentMins)?.id ?? '')
-                        : '';
+                      const explicitProfileId = r.processProfileIds?.[proc.id] ?? '';
+                      const selectedProfileId = explicitProfileId && editProfiles.some((p) => p.id === explicitProfileId)
+                        ? explicitProfileId
+                        : ((editProfiles.find((p) => getProfileTotalMinutes(editLineId, proc.id, p.id) === currentMins)?.id) ?? '');
                       return (
                         <td key={proc.id} className="py-2 sm:py-2.5 px-2 sm:px-4">
                           {isEditing && editProfiles.length > 0 ? (
@@ -409,6 +435,13 @@ export default function RecipesView() {
                               onSelect={(pid) => {
                                 const mins = pid ? getProfileTotalMinutes(editLineId, proc.id, pid) : 0;
                                 updateDraftProcessDuration(proc.id, mins);
+                                setDraft((prev) => {
+                                  if (!prev) return prev;
+                                  const nextProfileIds = { ...(prev.processProfileIds || {}) };
+                                  if (pid) nextProfileIds[proc.id] = pid;
+                                  else delete nextProfileIds[proc.id];
+                                  return { ...prev, processProfileIds: nextProfileIds };
+                                });
                               }}
                             />
                           ) : isEditing && editProfiles.length === 0 ? (
@@ -475,6 +508,7 @@ export default function RecipesView() {
                     ...p,
                     productionLineId: lineId,
                     processDurations: {},
+                    processProfileIds: {},
                     endDoughProcessId: firstProcessId,
                   }));
                 }}
@@ -529,6 +563,13 @@ export default function RecipesView() {
                               setAddDraft((p) => ({
                                 ...p,
                                 processDurations: { ...(p.processDurations || {}), [proc.id]: mins },
+                                processProfileIds: pid
+                                  ? { ...(p.processProfileIds || {}), [proc.id]: pid }
+                                  : (() => {
+                                      const next = { ...(p.processProfileIds || {}) };
+                                      delete next[proc.id];
+                                      return next;
+                                    })(),
                               }));
                             }}
                           />

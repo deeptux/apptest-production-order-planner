@@ -1,7 +1,7 @@
 // recipes = products + how long each stage runs. newer shape is processDurations[processId]=minutes;
 // old saved data still has mixing / makeupDividing keys — we normalize both ways so scheduling doesn't break
 import { SKU_PROCESS_DURATIONS } from '../data/skuProcessDurations.js';
-import { getProcessesForLine } from './productionLinesStore.js';
+import { getLines, getProcessesForLine, getMixingProfiles, getProfileTotalMinutes } from './productionLinesStore.js';
 import { isSupabaseConfigured } from '../lib/supabase';
 import { updateConfig } from '../api/config';
 
@@ -79,6 +79,9 @@ function normalizeRecipe(r) {
   const processDurations = r.processDurations && typeof r.processDurations === 'object'
     ? { ...r.processDurations }
     : legacyToProcessDurations(r);
+  const processProfileIds = r.processProfileIds && typeof r.processProfileIds === 'object'
+    ? { ...r.processProfileIds }
+    : {};
   const legacy = processDurationsToLegacy(processDurations);
   const productionLineId = r.productionLineId || 'line-loaf';
   return {
@@ -88,6 +91,7 @@ function normalizeRecipe(r) {
     endDoughProcessId: (r.endDoughProcessId && typeof r.endDoughProcessId === 'string') ? r.endDoughProcessId : 'mixing',
     ...legacy,
     processDurations,
+    processProfileIds,
   };
 }
 
@@ -213,6 +217,7 @@ export function addRecipe(recipe) {
     baking: recipe.baking,
     packaging: recipe.packaging,
     processDurations: recipe.processDurations,
+    processProfileIds: recipe.processProfileIds,
   });
   const slug = String(normalized.name).replace(/\s+/g, '-').toLowerCase();
   const id = normalized.id || `recipe-${slug}-${lineId}-${Date.now()}`;
@@ -229,14 +234,90 @@ export function updateRecipe(id, updates) {
   let next = { ...current, ...updates };
   if (updates.endDoughProcessId !== undefined) next.endDoughProcessId = updates.endDoughProcessId;
   if (updates.processDurations !== undefined) {
-    next.processDurations = { ...(current.processDurations || {}), ...updates.processDurations };
+    // Recipe page edits pass the whole durations object, so we replace.
+    // Merging here keeps stale keys around when line/process config changed.
+    next.processDurations = { ...(updates.processDurations || {}) };
     const legacy = processDurationsToLegacy(next.processDurations);
     next = { ...next, ...legacy };
+  }
+  if (updates.processProfileIds !== undefined) {
+    next.processProfileIds = { ...(updates.processProfileIds || {}) };
   }
   next = normalizeRecipe(next);
   recipes = [...recipes.slice(0, idx), next, ...recipes.slice(idx + 1)];
   persist();
   return next;
+}
+
+// Keep recipes valid even if Production line/process config changed a lot.
+// This prevents "can't edit / doesn't reflect" issues after line changes.
+export function repairRecipesAfterLinesChange() {
+  const lines = getLines();
+  if (!Array.isArray(lines) || lines.length === 0) return;
+
+  const fallbackLineId = lines[0].id;
+  let changed = false;
+
+  const nextRecipes = recipes.map((raw) => {
+    const current = normalizeRecipe(raw);
+    const validLineId = lines.some((l) => l.id === current.productionLineId)
+      ? current.productionLineId
+      : fallbackLineId;
+    const lineProcesses = getProcessesForLine(validLineId);
+    const validProcessIds = new Set(lineProcesses.map((p) => p.id));
+    const source = current.processDurations && typeof current.processDurations === 'object'
+      ? current.processDurations
+      : legacyToProcessDurations(current);
+    const sourceProfileIds = current.processProfileIds && typeof current.processProfileIds === 'object'
+      ? current.processProfileIds
+      : {};
+
+    const cleaned = {};
+    const cleanedProfileIds = {};
+    lineProcesses.forEach((p) => {
+      const wantedProfileId = sourceProfileIds[p.id];
+      const profiles = getMixingProfiles(validLineId, p.id);
+      const hasProfile = wantedProfileId && profiles.some((x) => x.id === wantedProfileId);
+      if (hasProfile) {
+        cleanedProfileIds[p.id] = wantedProfileId;
+        cleaned[p.id] = getProfileTotalMinutes(validLineId, p.id, wantedProfileId);
+      } else {
+        cleaned[p.id] = Number(source[p.id]) || 0;
+      }
+    });
+
+    const preferredEndDough = String(current.endDoughProcessId || '').trim();
+    const endDoughProcessId = validProcessIds.has(preferredEndDough)
+      ? preferredEndDough
+      : (lineProcesses[0]?.id || 'mixing');
+
+    const normalized = normalizeRecipe({
+      ...current,
+      productionLineId: validLineId,
+      processDurations: cleaned,
+      processProfileIds: cleanedProfileIds,
+      endDoughProcessId,
+    });
+
+    const before = JSON.stringify({
+      productionLineId: current.productionLineId,
+      processDurations: current.processDurations,
+      processProfileIds: current.processProfileIds,
+      endDoughProcessId: current.endDoughProcessId,
+    });
+    const after = JSON.stringify({
+      productionLineId: normalized.productionLineId,
+      processDurations: normalized.processDurations,
+      processProfileIds: normalized.processProfileIds,
+      endDoughProcessId: normalized.endDoughProcessId,
+    });
+    if (before !== after) changed = true;
+    return normalized;
+  });
+
+  if (!changed) return;
+  recipes = nextRecipes;
+  persist();
 }
 
 export function deleteRecipe(id) {
