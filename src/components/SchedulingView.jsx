@@ -844,14 +844,14 @@ export default function SchedulingView() {
                 onClick={() => { setViewMode('created'); setDateTimeSort({ key: null, dir: null }); }}
                 className={`px-2.5 py-1 rounded-md border text-xs font-medium transition-colors ${viewMode === 'created' ? 'border-primary bg-primary text-white' : 'border-gray-300 text-gray-700 hover:bg-gray-50'}`}
               >
-                Created
+                By Created Order
               </button>
               <button
                 type="button"
                 onClick={() => { setViewMode('schedule'); setDateTimeSort({ key: 'startSponge', dir: 'asc' }); }}
                 className={`px-2.5 py-1 rounded-md border text-xs font-medium transition-colors ${viewMode === 'schedule' ? 'border-primary bg-primary text-white' : 'border-gray-300 text-gray-700 hover:bg-gray-50'}`}
               >
-                Schedule
+                By Schedule Order
               </button>
             </div>
           </div>
@@ -862,7 +862,7 @@ export default function SchedulingView() {
             className="inline-flex items-center gap-1.5 sm:gap-2 px-3 sm:px-4 py-1.5 sm:py-2 bg-primary text-white rounded-lg font-medium hover:bg-primary-dark transition-colors text-xs sm:text-sm disabled:opacity-50"
           >
             <Plus className="w-4 h-4 sm:w-5 sm:h-5" />
-            Add batch
+            Add Schedule
           </button>
         </div>
         <div className="overflow-x-auto min-w-0">
@@ -1402,7 +1402,7 @@ export default function SchedulingView() {
           <Dialog.Overlay className="fixed inset-0 bg-black/50 z-40 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0" />
           <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-full max-w-lg max-h-[90vh] -translate-x-1/2 -translate-y-1/2 rounded-lg border border-gray-200 bg-white shadow-lg flex flex-col">
             <div className="p-4 border-b border-gray-200">
-              <Dialog.Title className="text-lg font-semibold text-gray-900">Add batch</Dialog.Title>
+              <Dialog.Title className="text-lg font-semibold text-gray-900">Add Schedule</Dialog.Title>
               {/* <Dialog.Description className="text-sm text-gray-600 mt-0.5">
                 Set batch start date and time, product, and demand. <strong>Total Quantity</strong> (e.g. 2000) is the total pieces to produce. Theoretical Output = SO-CO Excess + Exchange for LOSS + Excess + Samples (or override). Batches are created automatically based on capacity.
               </Dialog.Description> */}
@@ -1416,7 +1416,7 @@ export default function SchedulingView() {
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-xs font-medium text-gray-600 mb-0.5">Batch start date</label>
+                  <label className="block text-xs font-medium text-gray-600 mb-0.5">Schedule start date</label>
                   <input
                     type="date"
                     value={addBatchForm.date}
@@ -1687,7 +1687,7 @@ export default function SchedulingView() {
                   <Tabs.Content value="others" className="border border-gray-200 border-t-0 rounded-b-card p-3">
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       <div>
-                        <label className="block text-xs font-medium text-gray-600 mb-0.5">Batch Break Start (time)</label>
+                        <label className="block text-xs font-medium text-gray-600 mb-0.5">Timeblocker Start (time)</label>
                         <input
                           type="time"
                           value={addBatchForm.startSponge}
@@ -1697,7 +1697,7 @@ export default function SchedulingView() {
                         />
                       </div>
                       <div>
-                        <label className="block text-xs font-medium text-gray-600 mb-0.5">Batch Break End (time)</label>
+                        <label className="block text-xs font-medium text-gray-600 mb-0.5">Timeblocker End (time)</label>
                         <input
                           type="time"
                           value={addBatchForm.breakEnd}
@@ -1761,7 +1761,7 @@ export default function SchedulingView() {
                 })()}
                 className="px-4 py-2 rounded-lg bg-primary text-white text-sm font-medium hover:bg-primary-dark disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                {addBatchTab === 'others' ? 'Add batch break' : 'Add batch'}
+                {addBatchTab === 'others' ? 'Add Timeblocker' : 'Add batch'}
               </button>
             </div>
           </Dialog.Content>
