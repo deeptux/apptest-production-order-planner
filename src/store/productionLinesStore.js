@@ -959,4 +959,22 @@ export function getStaggerMinutesForLine(lineId) {
   return getStaggerMinutesFromMixingProfiles(getMixingProfiles(lineId, 'mixing'));
 }
 
+/**
+ * Pipelining stagger minutes for a specific process profile.
+ */
+export function getStaggerMinutesForProcessProfile(lineId, processId, profileId) {
+  if (!profileId) return 0;
+  const profiles = getMixingProfiles(lineId, processId);
+  const p = Array.isArray(profiles) ? profiles.find((x) => x.id === profileId) : null;
+  return getStaggerMinutesFromMixingProfiles(p ? [p] : []);
+}
+
+/**
+ * Back-compat: "Mixing profile" stagger minutes.
+ * Existing callers expect a pipeline to be defined in the Mixing process.
+ */
+export function getStaggerMinutesForMixingProfile(lineId, mixingProfileId) {
+  return getStaggerMinutesForProcessProfile(lineId, 'mixing', mixingProfileId);
+}
+
 export { LINES_STORAGE_KEY, LOAF_SECTION_IDS };

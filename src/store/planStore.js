@@ -2,7 +2,15 @@
 import { getPlan, updatePlan } from '../api/plan';
 import { isSupabaseConfigured } from '../lib/supabase';
 import { getRecipesForLine, getTotalProcessMinutesForLine } from '../store/recipeStore';
-import { getCapacityForProductFromLine, getYieldForProductFromLine, getLines, getStaggerMinutesForLine } from '../store/productionLinesStore';
+import {
+  getCapacityForProductFromLine,
+  getYieldForProductFromLine,
+  getLines,
+  getStaggerMinutesForLine,
+  getStaggerMinutesForProcessProfile,
+  getProcessesForLine,
+  getProfileTotalMinutes,
+} from '../store/productionLinesStore';
 import { recomputeEndTimesForRow, parseTimeToMinutes, addMinutesToTime } from '../utils/stageDurations';
 
 const PLAN_ROWS_STORAGE_KEY = 'loaf-plan-rows';
@@ -225,6 +233,59 @@ function computeEndTimesForRowPreservingType(row) {
   return recomputeEndTimesForRow(row);
 }
 
+function getStaggerMinutesForProduct(lineId, productName, recipesForLine, staggerCache) {
+  const key = String(productName || '');
+  if (!staggerCache) staggerCache = new Map();
+  if (staggerCache.has(key)) return staggerCache.get(key);
+
+  const recipe = (Array.isArray(recipesForLine) ? recipesForLine : []).find((r) => r?.name === productName);
+  const profileIds = recipe?.processProfileIds && typeof recipe.processProfileIds === 'object' ? recipe.processProfileIds : null;
+
+  // Back-compat: legacy recipes might have no profile-id selections at all.
+  if (!profileIds || Object.keys(profileIds).length === 0) {
+    const v = getStaggerMinutesForLine(lineId);
+    staggerCache.set(key, v);
+    return v;
+  }
+
+  const lineProcesses = getProcessesForLine(lineId);
+  if (!Array.isArray(lineProcesses) || lineProcesses.length === 0) {
+    const v = 0;
+    staggerCache.set(key, v);
+    return v;
+  }
+
+  const stageDurations = recipe?.processDurations && typeof recipe.processDurations === 'object' ? recipe.processDurations : {};
+
+  let offsetBeforeThisProcess = 0;
+  let best = null;
+
+  // Earliest breakpoint across any selected process profile decides the stagger offset.
+  // CandidateOffset = (sum of durations of processes before X) + (earliest pipeline breakpoint minutes within X)
+  for (const proc of lineProcesses) {
+    const selectedProfileId = profileIds?.[proc.id] || profileIds?.[String(proc.id)] || '';
+
+    const withinProcessStagger = selectedProfileId
+      ? getStaggerMinutesForProcessProfile(lineId, proc.id, selectedProfileId)
+      : 0;
+    if (withinProcessStagger > 0) {
+      const candidate = offsetBeforeThisProcess + withinProcessStagger;
+      best = best === null ? candidate : Math.min(best, candidate);
+    }
+
+    // Advance time offset by this process stage minutes.
+    let procMinutes = Number(stageDurations?.[proc.id]) || 0;
+    if ((procMinutes <= 0) && selectedProfileId) {
+      procMinutes = Number(getProfileTotalMinutes(lineId, proc.id, selectedProfileId)) || 0;
+    }
+    offsetBeforeThisProcess += procMinutes;
+  }
+
+  const v = Math.max(0, best ?? 0);
+  staggerCache.set(key, v);
+  return v;
+}
+
 export function insertBatchBreakWithReflow(payload) {
   const lineId = payload.productionLineId || getLines()[0]?.id || 'line-loaf';
   const dateStr = payload.date && typeof payload.date === 'string' ? payload.date.split('T')[0] : toDateString(state.planDate);
@@ -235,6 +296,9 @@ export function insertBatchBreakWithReflow(payload) {
   const endM = parseTimeToMinutes(breakEnd);
   if (endM <= startM) return { success: false, error: 'Batch Break End must be after Batch Break Start.' };
   const duration = endM - startM;
+
+  const recipesForLine = getRecipesForLine(lineId);
+  const staggerCache = new Map();
 
   // snap to grid / detect overlap — same idea as inserting a batch, but breaks don't need a product picked
   const insertStartMs = new Date(dateStr + 'T' + startSponge).getTime();
@@ -298,7 +362,6 @@ export function insertBatchBreakWithReflow(payload) {
   );
 
   // push everything that started after the break forward
-  const staggerMinutes = getStaggerMinutesForLine(lineId);
   const affectedRows = lineRows
     .filter((r) => affectedSet.has(r.id))
     .map((r) => ({ row: r, startMs: computeRowStartEndMs(r)?.startMs ?? 0 }))
@@ -312,22 +375,21 @@ export function insertBatchBreakWithReflow(payload) {
   let firstAffectedAfterBreak = true;
   for (const item of affectedRows) {
     const original = item.row;
+    const rowStaggerMinutes = getStaggerMinutesForProduct(lineId, original.product, recipesForLine, staggerCache);
     let nextStart = '';
-    if (staggerMinutes > 0) {
-      // First batch after a Time Blocker: start when the line is free (break end), not breakStart + stagger
-      // (breakStart + stagger is still "inside" or aligned to the pipelining grid but ignores buffer duration).
-      if (firstAffectedAfterBreak) {
-        nextStart = prevEndBatch;
-        firstAffectedAfterBreak = false;
-      } else {
-        nextStart = addMinutesToTime(prevStart, staggerMinutes);
-        if (parseTimeToMinutes(nextStart) < parseTimeToMinutes(prevStart) && nextStart !== prevStart) {
-          currentDate = addDays(currentDate, 1);
-        }
+
+    // First batch after a Time Blocker: start when the line is free (break end),
+    // not prevStart + stagger (because prevStart includes buffer duration).
+    if (firstAffectedAfterBreak) {
+      nextStart = prevEndBatch;
+      firstAffectedAfterBreak = false;
+    } else if (rowStaggerMinutes > 0) {
+      nextStart = addMinutesToTime(prevStart, rowStaggerMinutes);
+      if (parseTimeToMinutes(nextStart) < parseTimeToMinutes(prevStart) && nextStart !== prevStart) {
+        currentDate = addDays(currentDate, 1);
       }
     } else {
       nextStart = prevEndBatch;
-      firstAffectedAfterBreak = false;
       if (parseTimeToMinutes(prevEndBatch) <= parseTimeToMinutes(prevStart) && prevEndBatch !== prevStart) {
         currentDate = addDays(currentDate, 1);
       }
@@ -406,7 +468,8 @@ export function previewSwapOrderBetweenRows(rowIdA, rowIdB) {
   [ids[posA], ids[posB]] = [ids[posB], ids[posA]];
   const startPos = Math.min(posA, posB);
   const byId = new Map(lineRows.map((x) => [x.r.id, x.r]));
-  const staggerMinutes = getStaggerMinutesForLine(lineId);
+  const recipesForLine = getRecipesForLine(lineId);
+  const staggerCache = new Map();
 
   const updatedById = new Map();
   let currentDate = slots[startPos]?.date || slots[0]?.date || '';
@@ -445,23 +508,26 @@ export function previewSwapOrderBetweenRows(rowIdA, rowIdB) {
       startSponge = slot?.startSponge || prevStart;
       prevStart = startSponge;
       prevEndBatch = startSponge;
-    } else if (staggerMinutes > 0) {
+    } else {
+      const rowStaggerMinutes = getStaggerMinutesForProduct(lineId, original.product, recipesForLine, staggerCache);
       if (i > startPos) {
         const prevRefId = ids[i - 1];
         const prevMoved = updatedById.get(prevRefId);
         if (prevMoved?.isBreak && prevMoved.endBatch) {
           startSponge = prevMoved.endBatch;
         } else {
-          startSponge = addMinutesToTime(prevStart, staggerMinutes);
-          if (parseTimeToMinutes(startSponge) < parseTimeToMinutes(prevStart) && startSponge !== prevStart) {
-            currentDate = addDays(currentDate, 1);
+          if (rowStaggerMinutes > 0) {
+            startSponge = addMinutesToTime(prevStart, rowStaggerMinutes);
+            if (parseTimeToMinutes(startSponge) < parseTimeToMinutes(prevStart) && startSponge !== prevStart) {
+              currentDate = addDays(currentDate, 1);
+            }
+          } else {
+            startSponge = prevEndBatch;
+            if (parseTimeToMinutes(prevEndBatch) <= parseTimeToMinutes(prevStart) && prevEndBatch !== prevStart) {
+              currentDate = addDays(currentDate, 1);
+            }
           }
         }
-      }
-    } else {
-      startSponge = prevEndBatch;
-      if (parseTimeToMinutes(prevEndBatch) <= parseTimeToMinutes(prevStart) && prevEndBatch !== prevStart) {
-        currentDate = addDays(currentDate, 1);
       }
     }
 
@@ -773,6 +839,8 @@ function buildNewRowsFromModal(payload, createdAtMs) {
 
   const recipes = getRecipesForLine(lineId);
   const productName = recipes.find((r) => r.name === product)?.name || product;
+  const staggerCache = new Map();
+  const staggerMinutes = getStaggerMinutesForProduct(lineId, productName, recipes, staggerCache);
   const newRows = [];
   let currentStart = startSponge;
   let currentDate = dateStr;
@@ -824,7 +892,6 @@ function buildNewRowsFromModal(payload, createdAtMs) {
       batch: batchLabel,
     };
     newRows.push(newRow);
-    const staggerMinutes = getStaggerMinutesForLine(lineId);
     if (staggerMinutes > 0) {
       currentStart = addMinutesToTime(prevStart, staggerMinutes);
       if (parseTimeToMinutes(currentStart) < parseTimeToMinutes(prevStart) && currentStart !== prevStart) {
@@ -911,7 +978,8 @@ export function insertBatchesWithReflow(payload) {
   }
 
   const affectedSet = new Set(preview?.affectedRowIds || []);
-  const staggerMinutes = getStaggerMinutesForLine(lineId);
+  const recipesForLine = getRecipesForLine(lineId);
+  const staggerCache = new Map();
 
   // anything starting at/after the insert point gets bumped along the pipeline
   const lineRows = state.rows.filter((r) => r.productionLineId === lineId && (r.date || '') === dateStr);
@@ -936,9 +1004,10 @@ export function insertBatchesWithReflow(payload) {
   for (const item of affectedRows) {
     const original = item.row;
 
+    const rowStaggerMinutes = getStaggerMinutesForProduct(lineId, original.product, recipesForLine, staggerCache);
     let nextStart = '';
-    if (staggerMinutes > 0) {
-      nextStart = addMinutesToTime(prevStart, staggerMinutes);
+    if (rowStaggerMinutes > 0) {
+      nextStart = addMinutesToTime(prevStart, rowStaggerMinutes);
       if (parseTimeToMinutes(nextStart) < parseTimeToMinutes(prevStart) && nextStart !== prevStart) {
         currentDate = addDays(currentDate, 1);
       }
@@ -1118,7 +1187,8 @@ export function swapOrderBetweenRows(rowIdA, rowIdB) {
   const startPos = Math.min(posA, posB);
 
   const byId = new Map(lineRows.map((x) => [x.r.id, x.r]));
-  const staggerMinutes = getStaggerMinutesForLine(lineId);
+  const recipesForLine = getRecipesForLine(lineId);
+  const staggerCache = new Map();
 
   const updatedById = new Map();
   // anchor from the row immediately before the swap window so we don't invent a fake gap
@@ -1162,24 +1232,28 @@ export function swapOrderBetweenRows(rowIdA, rowIdB) {
       // new anchor for the segment we're rebuilding
       prevStart = startSponge;
       prevEndBatch = startSponge;
-    } else if (staggerMinutes > 0) {
+    } else {
+      const rowStaggerMinutes = getStaggerMinutesForProduct(lineId, original.product, recipesForLine, staggerCache);
       if (i > startPos) {
         const prevRefId = ids[i - 1];
         const prevMoved = updatedById.get(prevRefId);
-        if (prevMoved?.isBreak && prevMoved.endBatch) {
-          // match insertBatchBreakWithReflow — production resumes at break end, not breakStart+stagger
-          startSponge = prevMoved.endBatch;
+
+        if (rowStaggerMinutes > 0) {
+          if (prevMoved?.isBreak && prevMoved.endBatch) {
+            // match insertBatchBreakWithReflow — production resumes at break end, not breakStart+stagger
+            startSponge = prevMoved.endBatch;
+          } else {
+            startSponge = addMinutesToTime(prevStart, rowStaggerMinutes);
+            if (parseTimeToMinutes(startSponge) < parseTimeToMinutes(prevStart) && startSponge !== prevStart) {
+              currentDate = addDays(currentDate, 1);
+            }
+          }
         } else {
-          startSponge = addMinutesToTime(prevStart, staggerMinutes);
-          if (parseTimeToMinutes(startSponge) < parseTimeToMinutes(prevStart) && startSponge !== prevStart) {
+          startSponge = prevEndBatch;
+          if (parseTimeToMinutes(prevEndBatch) <= parseTimeToMinutes(prevStart) && prevEndBatch !== prevStart) {
             currentDate = addDays(currentDate, 1);
           }
         }
-      }
-    } else {
-      startSponge = prevEndBatch;
-      if (parseTimeToMinutes(prevEndBatch) <= parseTimeToMinutes(prevStart) && prevEndBatch !== prevStart) {
-        currentDate = addDays(currentDate, 1);
       }
     }
 

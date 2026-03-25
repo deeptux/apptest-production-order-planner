@@ -173,13 +173,36 @@ export function getEndDoughProcessIdForProduct(productName) {
 export function getStageDurationsForProduct(productName) {
   const r = getRecipeByName(productName);
   if (!r) return null;
-  return {
-    mixing: r.mixing,
-    makeupDividing: r.makeupDividing,
-    makeupPanning: r.makeupPanning,
-    baking: r.baking,
-    packaging: r.packaging,
+  const pd = r.processDurations && typeof r.processDurations === 'object'
+    ? r.processDurations
+    : legacyToProcessDurations(r);
+  const base = {
+    mixing: Number(pd['mixing']) || 0,
+    makeupDividing: Number(pd['makeup-dividing']) || 0,
+    makeupPanning: Number(pd['makeup-panning']) || 0,
+    baking: Number(pd['baking']) || 0,
+    packaging: Number(pd['packaging']) || 0,
   };
+
+  const anyNonZero = Object.values(base).some((v) => Number(v) > 0);
+  if (anyNonZero) return base;
+
+  // Newer recipes can store only `processProfileIds` and leave legacy durations at 0.
+  // In that case, derive per-stage minutes from the selected process profiles.
+  const profileIds = r.processProfileIds && typeof r.processProfileIds === 'object' ? r.processProfileIds : null;
+  if (!profileIds) return base;
+
+  const lineId = r.productionLineId;
+  const derived = { ...base };
+  for (const procId of LEGACY_PROCESS_IDS) {
+    const legacyKey = PROCESS_ID_TO_LEGACY_KEY[procId];
+    if (!legacyKey) continue;
+    const selectedProfileId = profileIds?.[procId] ?? '';
+    if (!selectedProfileId) continue;
+    derived[legacyKey] = Number(getProfileTotalMinutes(lineId, procId, selectedProfileId)) || 0;
+  }
+  const total = derived.mixing + derived.makeupDividing + derived.makeupPanning + derived.baking + derived.packaging;
+  return total > 0 ? derived : null;
 }
 
 export function getTotalProcessMinutes(productName) {
@@ -195,7 +218,16 @@ export function getTotalProcessMinutesForLine(productName, lineId) {
   const procs = getProcessesForLine(lineId);
   if (!procs.length) return getTotalProcessMinutes(productName);
   const pd = r.processDurations || legacyToProcessDurations(r);
-  return procs.reduce((sum, p) => sum + (Number(pd[p.id]) || 0), 0);
+  const sumFromDurations = procs.reduce((sum, p) => sum + (Number(pd[p.id]) || 0), 0);
+  if (sumFromDurations > 0) return sumFromDurations;
+  const profileIds = r.processProfileIds && typeof r.processProfileIds === 'object' ? r.processProfileIds : {};
+  const sumFromProfiles = procs.reduce((sum, p) => {
+    const profileId = profileIds[p.id];
+    if (!profileId) return sum;
+    const mins = getProfileTotalMinutes(lineId, p.id, profileId);
+    return sum + (Number(mins) || 0);
+  }, 0);
+  return sumFromProfiles > 0 ? sumFromProfiles : 0;
 }
 
 export function setRecipes(next) {
@@ -280,7 +312,9 @@ export function repairRecipesAfterLinesChange() {
       const hasProfile = wantedProfileId && profiles.some((x) => x.id === wantedProfileId);
       if (hasProfile) {
         cleanedProfileIds[p.id] = wantedProfileId;
-        cleaned[p.id] = getProfileTotalMinutes(validLineId, p.id, wantedProfileId);
+        // Keep existing recipe minutes as source of truth.
+        // Auto-replacing with profile totals here can zero out durations and break scheduling behavior.
+        cleaned[p.id] = Number(source[p.id]) || 0;
       } else {
         cleaned[p.id] = Number(source[p.id]) || 0;
       }

@@ -196,6 +196,28 @@ export default function SchedulingView() {
   const { version: recipesVersion } = useRecipesVersion();
   const lines = useMemo(() => getLines(), [linesVersion]);
 
+  // If recipe/profile logic changes, previously saved plan rows may still contain placeholder
+  // end times (e.g. "00:00"), which then ruins Scheduling + downstream visuals.
+  // Recompute only obvious placeholders to avoid overwriting any intentional edits.
+  useEffect(() => {
+    setRows((prev) => {
+      let changed = false;
+      const next = prev.map((r) => {
+        if (r?.isBreak) return r;
+        const endDough = String(r.endDough ?? '').trim();
+        const endBatch = String(r.endBatch ?? '').trim();
+        const isPlaceholder = (endDough === '00:00' || endDough === '') && (endBatch === '00:00' || endBatch === '');
+        if (!isPlaceholder) return r;
+        if (!r?.startSponge || typeof r.startSponge !== 'string' || !r.product) return r;
+        const { endDough: nd, endBatch: nb } = recomputeEndTimesForRow(r);
+        if (nd === r.endDough && nb === r.endBatch) return r;
+        changed = true;
+        return { ...r, endDough: nd, endBatch: nb };
+      });
+      return changed ? next : prev;
+    });
+  }, [recipesVersion, linesVersion, setRows]);
+
   useEffect(() => {
     return () => {
       if (clickTimeoutRef.current) clearTimeout(clickTimeoutRef.current);
