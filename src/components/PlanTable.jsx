@@ -3,11 +3,9 @@ import { useMemo, useState, useEffect } from 'react';
 import { usePlan } from '../context/PlanContext';
 import { getOrderBatchAndLineBatch } from '../store/planStore';
 import {
-  getAlignedLegacyProcessProcMinutes,
   getProcMinutesForPlanSection,
-  getProcessWindowEndOffsetMinutes,
-  getProcessWindowStartOffsetMinutes,
-  isLegacyProcessSectionId,
+  getProcessTimelineOffsetsMinutes,
+  resolveLegacySectionIdForRowContext,
 } from '../utils/stageDurations';
 import { getProductionStatus } from '../utils/productionStatus';
 import { getCapacityForProduct, getDoughWeightKgForProduct } from '../store/capacityProfileStore';
@@ -145,18 +143,30 @@ export default function PlanTable({
     return SECTIONS.map((s, i) => ({ id: s.id, name: s.label, order: i }));
   }, [sortedProcesses]);
 
+  // Maps opaque tab ids (e.g. proc-*) to loaf stage ids so schedule-aligned times chain by stage.
+  const canonicalSectionId = useMemo(
+    () => resolveLegacySectionIdForRowContext(sectionId, processesForProcTime),
+    [sectionId, processesForProcTime],
+  );
+
   const baseColumns = useMemo(() => {
     let cols;
     if (Array.isArray(sortedProcesses) && sortedProcesses.length > 0) {
-      const p = sortedProcesses.find((x) => x.id === sectionId);
-      if (p) cols = buildPlanColumnsForProcess(p);
+      const tabProc = sortedProcesses.find((x) => x.id === sectionId);
+      if (tabProc && canonicalSectionId) {
+        cols = buildPlanColumnsForProcess({ id: canonicalSectionId, name: tabProc.name });
+      } else if (tabProc) {
+        cols = buildPlanColumnsForProcess(tabProc);
+      } else if (canonicalSectionId) {
+        cols = buildPlanColumnsForProcess({ id: canonicalSectionId, name: canonicalSectionId });
+      }
     }
-    if (!cols) cols = SECTION_COLUMNS[sectionId] || FALLBACK_COLUMNS;
+    if (!cols) cols = SECTION_COLUMNS[sectionId] || SECTION_COLUMNS[canonicalSectionId] || FALLBACK_COLUMNS;
     if (!scheduleAlignedDisplay) {
       return cols.map((c) => (c.key === 'batch' ? { ...c, label: 'Line Batch' } : c));
     }
     return cols;
-  }, [sectionId, sortedProcesses, scheduleAlignedDisplay]);
+  }, [sectionId, sortedProcesses, scheduleAlignedDisplay, canonicalSectionId]);
 
   const restColumns = baseColumns.filter((c) => c.key !== 'productionStatus');
   const columns = [
@@ -184,10 +194,12 @@ export default function PlanTable({
         m.set(row.id, null);
         return;
       }
-      if (scheduleAlignedDisplay && isLegacyProcessSectionId(sectionId)) {
-        const aligned = getAlignedLegacyProcessProcMinutes(row, sectionId);
-        m.set(row.id, aligned != null && !Number.isNaN(aligned) ? aligned : null);
-        return;
+      if (scheduleAlignedDisplay) {
+        const timeline = getProcessTimelineOffsetsMinutes(row, sectionId, processesForProcTime);
+        if (timeline) {
+          m.set(row.id, Math.max(0, Math.round(timeline.endOff - timeline.startOff)));
+          return;
+        }
       }
       const mins = getProcMinutesForPlanSection(row, sectionId, processesForProcTime);
       m.set(row.id, mins != null && !Number.isNaN(Number(mins)) ? mins : null);
@@ -305,34 +317,24 @@ export default function PlanTable({
                             <SchedulingStackCell stack={schedulingTimeStackFromRowHm(row, 'endBatch')} />
                           );
                         } else value = rawEb;
-                      } else if (scheduleAlignedDisplay && isLegacyProcessSectionId(sectionId)) {
-                        const anchor = batchScheduleAnchorMs(row);
-                        if (anchor == null) {
-                          value = '—';
-                        } else if (key === 'startSponge') {
-                          const off = getProcessWindowStartOffsetMinutes(row, sectionId);
-                          value =
-                            off === null ? (
-                              '—'
-                            ) : (
-                              <SchedulingStackCell stack={schedulingTimeStackFromMs(anchor + off * 60000)} />
-                            );
-                        } else {
-                          const off = getProcessWindowEndOffsetMinutes(row, sectionId);
-                          value =
-                            off === null ? (
-                              '—'
-                            ) : (
-                              <SchedulingStackCell stack={schedulingTimeStackFromMs(anchor + off * 60000)} />
-                            );
-                        }
                       } else if (scheduleAlignedDisplay) {
-                        const raw = row[key];
-                        if (raw == null || raw === '') value = '—';
-                        else
-                          value = (
-                            <SchedulingStackCell stack={schedulingTimeStackFromRowHm(row, key)} />
-                          );
+                        const anchor = batchScheduleAnchorMs(row);
+                        const timeline = getProcessTimelineOffsetsMinutes(row, sectionId, processesForProcTime);
+                        if (timeline != null && anchor != null) {
+                          const ms =
+                            key === 'startSponge'
+                              ? anchor + timeline.startOff * 60000
+                              : anchor + timeline.endOff * 60000;
+                          value = <SchedulingStackCell stack={schedulingTimeStackFromMs(ms)} />;
+                        } else {
+                          const raw = row[key];
+                          if (raw == null || raw === '') value = '—';
+                          else {
+                            value = (
+                              <SchedulingStackCell stack={schedulingTimeStackFromRowHm(row, key)} />
+                            );
+                          }
+                        }
                       } else {
                         value = row[key] ?? '—';
                       }

@@ -295,23 +295,30 @@ export default function SchedulingView() {
   const { version: recipesVersion } = useRecipesVersion();
   const lines = useMemo(() => getLines(), [linesVersion]);
 
-  // If recipe/profile logic changes, previously saved plan rows may still contain placeholder
-  // end times (e.g. "00:00"), which then ruins Scheduling + downstream visuals.
-  // Recompute only obvious placeholders to avoid overwriting any intentional edits.
+  // Recipe or line profile changed → re-derive End Dough / End Batch from Start Sponge + current recipe.
+  // Rows store HH:MM on the row; if we only fixed "00:00" placeholders, batches created under an old recipe
+  // (e.g. 282 min to end dough) kept that wall time forever even after you fixed the recipe to 299 — looked
+  // like "wrong math" when Process Time already read live totals from the recipe.
   useEffect(() => {
     setRows((prev) => {
       let changed = false;
       const next = prev.map((r) => {
         if (r?.isBreak) return r;
-        const endDough = String(r.endDough ?? '').trim();
-        const endBatch = String(r.endBatch ?? '').trim();
-        const isPlaceholder = (endDough === '00:00' || endDough === '') && (endBatch === '00:00' || endBatch === '');
-        if (!isPlaceholder) return r;
         if (!r?.startSponge || typeof r.startSponge !== 'string' || !r.product) return r;
         const { endDough: nd, endBatch: nb } = recomputeEndTimesForRow(r);
-        if (nd === r.endDough && nb === r.endBatch) return r;
+        const liveTotal =
+          getTotalProcessMinutesForLine(r.product, r.productionLineId) || getTotalProcessMinutes(r.product);
+        const procNum = Number(r.procTime);
+        const procDrift = liveTotal > 0 && (Number.isNaN(procNum) || Math.abs(procNum - liveTotal) > 0.5);
+        const endsDrift = nd !== r.endDough || nb !== r.endBatch;
+        if (!endsDrift && !procDrift) return r;
         changed = true;
-        return { ...r, endDough: nd, endBatch: nb };
+        return {
+          ...r,
+          endDough: nd,
+          endBatch: nb,
+          ...(liveTotal > 0 ? { procTime: liveTotal } : {}),
+        };
       });
       return changed ? next : prev;
     });

@@ -13,9 +13,9 @@ export function getRowProcessWindowMs(row, processId, sortedProcesses) {
   const anchor = batchScheduleAnchorMsSingapore(row);
   if (anchor == null || row?.isBreak) return null;
 
-  if (isLegacyProcessSectionId(processId)) {
-    const startOff = getProcessWindowStartOffsetMinutes(row, processId);
-    const endOff = getProcessWindowEndOffsetMinutes(row, processId);
+  if (isLegacyProcessSectionId(processId, sortedProcesses)) {
+    const startOff = getProcessWindowStartOffsetMinutes(row, processId, sortedProcesses);
+    const endOff = getProcessWindowEndOffsetMinutes(row, processId, sortedProcesses);
     if (startOff == null || endOff == null) return null;
     return {
       startMs: anchor + startOff * 60000,

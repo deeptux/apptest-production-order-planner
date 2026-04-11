@@ -303,34 +303,63 @@ export function previewInsertBatchBreakWithReflow(payload) {
     .map((r) => ({ row: r, startMs: computeRowStartEndMs(r)?.startMs ?? null }))
     .filter((x) => x.startMs != null)
     .sort((a, b) => a.startMs - b.startMs);
-  const firstAtOrAfter = starts.find((x) => x.startMs >= insertStartMs) || null;
   const latest = getLatestBatchEndForLineOnDate(lineId, dateStr);
 
   let snappedDate = dateStr;
   let snappedStart = startSponge;
-  let snappedStartMs = insertStartMs;
-  if (firstAtOrAfter) {
-    snappedStartMs = firstAtOrAfter.startMs;
-    snappedDate = firstAtOrAfter.row.date;
-    snappedStart = firstAtOrAfter.row.startSponge;
-  } else if (latest && insertStartMs <= latest.endMs) {
-    snappedStartMs = latest.endMs;
-    snappedDate = latest.date;
-    snappedStart = latest.endBatch;
+  let didSnap = false;
+
+  // Old bug: "first batch start >= typed time" snapped 8:06am to 3:26pm — morning is free; that rule is wrong.
+  // Snap only when typed time falls *during* another run, or after all starts but still before the last batch ends.
+  for (const r of lineRows) {
+    const se = computeRowStartEndMs(r);
+    if (!se) continue;
+    if (insertStartMs >= se.startMs && insertStartMs < se.endMs) {
+      const w = wallClockAfterBatchEnd(r);
+      if (w) {
+        snappedDate = w.date;
+        snappedStart = w.startSponge;
+        didSnap = true;
+      }
+      break;
+    }
   }
 
-  const affectedRowIds = lineRows
-    .map((r) => ({ r, se: computeRowStartEndMs(r) }))
-    .filter((x) => x.se && x.se.startMs >= snappedStartMs)
-    .sort((a, b) => a.se.startMs - b.se.startMs)
-    .map((x) => x.r.id);
+  if (!didSnap && latest && starts.length > 0) {
+    const lastStartMs = starts[starts.length - 1].startMs;
+    if (insertStartMs > lastStartMs && insertStartMs < latest.endMs) {
+      const latestRow = lineRows.find((r) => {
+        const se = computeRowStartEndMs(r);
+        return se && se.endMs === latest.endMs;
+      });
+      const w = latestRow ? wallClockAfterBatchEnd(latestRow) : null;
+      if (w) {
+        snappedDate = w.date;
+        snappedStart = w.startSponge;
+        didSnap = true;
+      }
+    }
+  }
 
   const snappedDateNorm = (snappedDate || '').split('T')[0];
-  const didSnap = snappedDateNorm !== dateStr || snappedStart !== startSponge;
+  const breakEndH =
+    payload.breakEnd && /^\d{1,2}:\d{2}$/.test(String(payload.breakEnd).trim())
+      ? String(payload.breakEnd).trim()
+      : '';
+  const lineRowsOverlap = state.rows.filter(
+    (r) => r.productionLineId === lineId && (r.date || '').split('T')[0] === snappedDateNorm,
+  );
+  const affectedRowIds = breakEndH
+    ? collectAffectedRowIdsForBreak(lineRowsOverlap, snappedDateNorm, snappedStart, breakEndH)
+    : [];
+
+  const didSnapVsPayload = snappedDateNorm !== dateStr || snappedStart !== startSponge;
   return {
-    hasConflict: affectedRowIds.length > 0 || didSnap,
+    // Reflowing later batches is normal when inserting earlier in the day — not a "time conflict". Only prompt if we
+    // actually changed the requested start (overlap / still-busy tail).
+    hasConflict: didSnapVsPayload,
     affectedRowIds,
-    snappedTo: didSnap ? { date: snappedDateNorm, startSponge: snappedStart } : null,
+    snappedTo: didSnapVsPayload ? { date: snappedDateNorm, startSponge: snappedStart } : null,
   };
 }
 
@@ -366,9 +395,11 @@ export function insertBatchBreakWithReflow(payload) {
 
   const snappedDate = preview.snappedTo ? preview.snappedTo.date : dateStr;
   const snappedStart = preview.snappedTo ? preview.snappedTo.startSponge : startSponge;
-  const snappedStartMs = new Date(snappedDate + 'T' + snappedStart).getTime();
-  const lineRows = state.rows.filter((r) => r.productionLineId === lineId && (r.date || '') === dateStr);
-  const affectedSet = new Set(preview.affectedRowIds || []);
+  const snapDs = (snappedDate || '').split('T')[0];
+  const lineRows = state.rows.filter((r) => r.productionLineId === lineId && (r.date || '').split('T')[0] === snapDs);
+  const affectedSet = new Set(
+    collectAffectedRowIdsForBreak(lineRows, snapDs, snappedStart, breakEnd),
+  );
 
   const createdAtMs = Date.now();
   const createdAtIso = new Date(createdAtMs).toISOString();
@@ -445,29 +476,11 @@ export function insertBatchBreakWithReflow(payload) {
 
   const updatedAffectedOrdered = affectedRows.map((x) => updatedAffectedById.get(x.row.id)).filter(Boolean);
 
-  const nextAll = [];
-  let inserted = false;
-  let lastLineInsertIdx = -1;
-  for (const r of state.rows) {
-    if (r.productionLineId !== lineId || (r.date || '') !== dateStr) {
-      nextAll.push(r);
-      continue;
-    }
-    lastLineInsertIdx = nextAll.length;
-    if (affectedSet.has(r.id)) {
-      if (!inserted) {
-        nextAll.push(newBreakRow);
-        nextAll.push(...updatedAffectedOrdered);
-        inserted = true;
-      }
-      continue;
-    }
-    nextAll.push(r);
-  }
-  if (!inserted) {
-    const insertAt = lastLineInsertIdx >= 0 ? lastLineInsertIdx + 1 : nextAll.length;
-    nextAll.splice(insertAt, 0, newBreakRow);
-  }
+  const untouchedBreak = lineRows.filter((r) => !affectedSet.has(r.id));
+  const mergedBreakDay = [...untouchedBreak, newBreakRow, ...updatedAffectedOrdered].sort(
+    (a, b) => rowScheduleStartMs(a) - rowScheduleStartMs(b),
+  );
+  const nextAll = replaceRowsForLineDate(state.rows, lineId, snapDs, mergedBreakDay);
 
   state = { ...state, rows: nextAll };
   persistRows(state.rows);
@@ -833,6 +846,91 @@ function computeRowStartEndMs(row) {
   return { startMs, endMs };
 }
 
+// Calendar date + HH:MM for "start next thing after this batch" (handles endBatch past midnight vs row.date).
+function wallClockAfterBatchEnd(row) {
+  const ds = row.date && typeof row.date === 'string' ? row.date.split('T')[0] : '';
+  if (!ds || !row.endBatch || !row.startSponge) return null;
+  if (parseTimeToMinutes(row.endBatch) <= parseTimeToMinutes(row.startSponge)) {
+    return { date: addDays(ds, 1), startSponge: row.endBatch };
+  }
+  return { date: ds, startSponge: row.endBatch };
+}
+
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+// "Line busy" for spacing new batches: sponge → end dough (another sponge can start after end dough).
+// Batch breaks use full start → endBatch (whole line blocked). Missing endDough falls back to full batch span.
+function computeScheduleConflictWindowMs(row) {
+  const dateStr = row.date && typeof row.date === 'string' ? row.date.split('T')[0] : '';
+  if (!dateStr || !row.startSponge) return null;
+  if (row.isBreak) return computeRowStartEndMs(row);
+  if (!row.endDough) return computeRowStartEndMs(row);
+  const startMs = new Date(`${dateStr}T${row.startSponge}`).getTime();
+  let endMs = new Date(`${dateStr}T${row.endDough}`).getTime();
+  if (parseTimeToMinutes(row.endDough) <= parseTimeToMinutes(row.startSponge)) endMs += MS_PER_DAY;
+  return { startMs, endMs };
+}
+
+function windowsOverlap(a, b) {
+  return a.startMs < b.endMs && b.startMs < a.endMs;
+}
+
+function collectAffectedRowIdsForNewBatches(lineRows, newRows) {
+  const nwins = (newRows || []).map(computeScheduleConflictWindowMs).filter(Boolean);
+  if (nwins.length === 0) return [];
+  const idSet = new Set();
+  for (const r of lineRows) {
+    const we = computeScheduleConflictWindowMs(r);
+    if (!we) continue;
+    for (const wn of nwins) {
+      if (windowsOverlap(wn, we)) {
+        idSet.add(r.id);
+        break;
+      }
+    }
+  }
+  return [...idSet];
+}
+
+function collectAffectedRowIdsForBreak(lineRows, dateNorm, breakStartHhmm, breakEndHhmm) {
+  let bwStart = new Date(`${dateNorm}T${breakStartHhmm}`).getTime();
+  let bwEnd = new Date(`${dateNorm}T${breakEndHhmm}`).getTime();
+  if (parseTimeToMinutes(breakEndHhmm) <= parseTimeToMinutes(breakStartHhmm)) bwEnd += MS_PER_DAY;
+  const bw = { startMs: bwStart, endMs: bwEnd };
+  const ids = [];
+  for (const r of lineRows) {
+    const se = computeRowStartEndMs(r);
+    if (!se) continue;
+    if (windowsOverlap(bw, se)) ids.push(r.id);
+  }
+  return ids;
+}
+
+function rowScheduleStartMs(r) {
+  const ds = r.date && typeof r.date === 'string' ? r.date.split('T')[0] : '';
+  if (!ds || !r.startSponge) return 0;
+  return new Date(`${ds}T${r.startSponge}`).getTime();
+}
+
+// Replace all rows for (lineId, calendar day) with replacement list (caller sorts).
+function replaceRowsForLineDate(allRows, lineId, dateNorm, replacement) {
+  const out = [];
+  let done = false;
+  for (const r of allRows) {
+    const rdt = r.date && typeof r.date === 'string' ? r.date.split('T')[0] : '';
+    if (r.productionLineId === lineId && rdt === dateNorm) {
+      if (!done) {
+        out.push(...replacement);
+        done = true;
+      }
+      continue;
+    }
+    out.push(r);
+  }
+  if (!done) out.push(...replacement);
+  return out;
+}
+
 function addDays(dateStr, days) {
   const d = new Date(dateStr);
   if (Number.isNaN(d.getTime())) return dateStr;
@@ -955,42 +1053,66 @@ export function previewInsertBatchesWithReflow(payload) {
   const lineRows = state.rows.filter((r) => r.productionLineId === lineId && (r.date || '') === dateStr);
   if (lineRows.length === 0) return { hasConflict: false, affectedRowIds: [], snappedTo: null };
 
-  // Snap rule (forward-only):
-  // - Find the nearest existing batch start at/after the typed time. If none, snap to "end of day schedule" (latest end on line).
   const starts = lineRows
     .map((r) => ({ row: r, startMs: computeRowStartEndMs(r)?.startMs ?? null }))
     .filter((x) => x.startMs != null)
     .sort((a, b) => a.startMs - b.startMs);
 
-  const firstAtOrAfter = starts.find((x) => x.startMs >= insertStartMs) || null;
   const latest = getLatestBatchEndForLineOnDate(lineId, dateStr);
 
   let snappedDate = dateStr;
   let snappedStartSponge = startSponge;
-  let snappedStartMs = insertStartMs;
+  let didSnap = false;
 
-  if (firstAtOrAfter) {
-    snappedStartMs = firstAtOrAfter.startMs;
-    snappedDate = firstAtOrAfter.row.date;
-    snappedStartSponge = firstAtOrAfter.row.startSponge;
-  } else if (latest && insertStartMs <= latest.endMs) {
-    // typed time is before the last batch finishes but there's no "next" start slot — shove them to end of the last batch
-    snappedStartMs = latest.endMs;
-    snappedDate = latest.date;
-    snappedStartSponge = latest.endBatch;
+  for (const r of lineRows) {
+    const se = computeRowStartEndMs(r);
+    if (!se) continue;
+    if (insertStartMs >= se.startMs && insertStartMs < se.endMs) {
+      const w = wallClockAfterBatchEnd(r);
+      if (w) {
+        snappedDate = w.date;
+        snappedStartSponge = w.startSponge;
+        didSnap = true;
+      }
+      break;
+    }
   }
 
-  const affectedRowIds = lineRows
-    .map((r) => ({ r, se: computeRowStartEndMs(r) }))
-    .filter((x) => x.se && x.se.startMs >= snappedStartMs)
-    .sort((a, b) => a.se.startMs - b.se.startMs)
-    .map((x) => x.r.id);
+  if (!didSnap && latest && starts.length > 0) {
+    const lastStartMs = starts[starts.length - 1].startMs;
+    if (insertStartMs > lastStartMs && insertStartMs < latest.endMs) {
+      const latestRow = lineRows.find((r) => {
+        const se = computeRowStartEndMs(r);
+        return se && se.endMs === latest.endMs;
+      });
+      const w = latestRow ? wallClockAfterBatchEnd(latestRow) : null;
+      if (w) {
+        snappedDate = w.date;
+        snappedStartSponge = w.startSponge;
+        didSnap = true;
+      }
+    }
+  }
 
-  const didSnap = snappedDate !== dateStr || snappedStartSponge !== startSponge;
+  const snappedDateNorm = (snappedDate || '').split('T')[0];
+  const finalPayload =
+    snappedDateNorm !== dateStr || snappedStartSponge !== startSponge
+      ? { ...payload, date: snappedDateNorm, startSponge: snappedStartSponge }
+      : payload;
+  const lineRowsOverlap = state.rows.filter(
+    (r) => r.productionLineId === lineId && (r.date || '').split('T')[0] === snappedDateNorm,
+  );
+  const dryBuild = buildNewRowsFromModal(finalPayload, Date.now());
+  const affectedRowIds =
+    dryBuild.success && dryBuild.newRows?.length
+      ? collectAffectedRowIdsForNewBatches(lineRowsOverlap, dryBuild.newRows)
+      : [];
+
+  const didSnapVsPayload = snappedDateNorm !== dateStr || snappedStartSponge !== startSponge;
   return {
-    hasConflict: affectedRowIds.length > 0 || didSnap,
+    hasConflict: didSnapVsPayload,
     affectedRowIds,
-    snappedTo: didSnap ? { date: snappedDate, startSponge: snappedStartSponge } : null,
+    snappedTo: didSnapVsPayload ? { date: snappedDateNorm, startSponge: snappedStartSponge } : null,
   };
 }
 
@@ -1016,12 +1138,12 @@ export function insertBatchesWithReflow(payload) {
     }
   }
 
-  const affectedSet = new Set(preview?.affectedRowIds || []);
   const recipesForLine = getRecipesForLine(lineId);
   const staggerCache = new Map();
 
-  // anything starting at/after the insert point gets bumped along the pipeline
-  const lineRows = state.rows.filter((r) => r.productionLineId === lineId && (r.date || '') === dateStr);
+  // Only rows whose sponge→endDough window overlaps a new batch get reflowed (not "everything after 8am").
+  const lineRows = state.rows.filter((r) => r.productionLineId === lineId && (r.date || '').split('T')[0] === dateStr);
+  const affectedSet = new Set(collectAffectedRowIdsForNewBatches(lineRows, newRows));
   const affectedRows = lineRows
     .filter((r) => affectedSet.has(r.id))
     .map((r) => {
@@ -1073,32 +1195,13 @@ export function insertBatchesWithReflow(payload) {
     prevEndBatch = moved.endBatch;
   }
 
-  // stitch arrays without nuking unrelated lines: other lines untouched; on this line, rows before the conflict stay put;
-  // first time we hit an affected id we splice in [new rows][reflowed affected...] and skip the rest of the old affected ids
   const updatedAffectedOrdered = affectedRows.map((x) => updatedAffectedById.get(x.row.id)).filter(Boolean);
-  const nextAll = [];
-  let inserted = false;
-  let lastLineInsertIdx = -1;
-  for (const r of state.rows) {
-    if (r.productionLineId !== lineId || (r.date || '') !== dateStr) {
-      nextAll.push(r);
-      continue;
-    }
-    lastLineInsertIdx = nextAll.length;
-    if (affectedSet.has(r.id)) {
-      if (!inserted) {
-        nextAll.push(...newRows.map(normalizeRow));
-        nextAll.push(...updatedAffectedOrdered);
-        inserted = true;
-      }
-      continue;
-    }
-    nextAll.push(r);
-  }
-  if (!inserted) {
-    const insertAt = lastLineInsertIdx >= 0 ? lastLineInsertIdx + 1 : nextAll.length;
-    nextAll.splice(insertAt, 0, ...newRows.map(normalizeRow));
-  }
+  const untouched = lineRows.filter((r) => !affectedSet.has(r.id));
+  const normalizedNew = newRows.map(normalizeRow);
+  const mergedSorted = [...untouched, ...normalizedNew, ...updatedAffectedOrdered].sort(
+    (a, b) => rowScheduleStartMs(a) - rowScheduleStartMs(b),
+  );
+  const nextAll = replaceRowsForLineDate(state.rows, lineId, dateStr, mergedSorted);
 
   state = { ...state, rows: nextAll };
   persistRows(state.rows);

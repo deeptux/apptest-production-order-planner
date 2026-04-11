@@ -72,7 +72,7 @@ export default function DashboardView() {
     <div className="p-4 sm:p-6 flex flex-col gap-6 max-w-[1600px] xl:max-w-[1920px] 2xl:max-w-[2200px] mx-auto w-full min-w-0">
       <StatsCards filterProductionLineId={selectedLineId} />
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 min-w-0">
-        <GanttChart maxRows={4} filterProductionLineId={selectedLineId} />
+        <GanttChart maxRows={4} filterProductionLineId={selectedLineId} sortedProcesses={sortedProcesses} />
         <OutputByProductChart maxRows={4} filterProductionLineId={selectedLineId} />
       </div>
       <section className="flex flex-col gap-3">
@@ -96,8 +96,8 @@ export default function DashboardView() {
 
         {sortedProcesses.length === 0 ? (
           <div className="bg-surface-card rounded-card border border-gray-200 p-6 text-sm text-gray-600 shadow-card">
-            No processes defined for this production line. Add processes in{' '}
-            <strong className="text-gray-800">Production</strong>.
+            No <strong className="text-gray-800">Process Chain</strong> steps for this line yet. Add them under{' '}
+            <strong className="text-gray-800">Production</strong> (same line profile: Loaf, Bun, etc.).
           </div>
         ) : (
           <SectionTabs value={section} onValueChange={setSection} sections={tabSections}>

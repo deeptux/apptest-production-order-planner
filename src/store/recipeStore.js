@@ -164,14 +164,45 @@ export function getRecipeByName(name) {
   return recipes.find((r) => r.name === name) ?? null;
 }
 
-// which step counts as "end dough" on the grid — default mixing if recipe forgot to set it
-export function getEndDoughProcessIdForProduct(productName) {
-  const r = getRecipeByName(productName);
-  return (r && r.endDoughProcessId) ? r.endDoughProcessId : 'mixing';
+// Plan rows carry productionLineId — prefer that recipe so Loaf vs Bun same product name don’t collide.
+export function getRecipeForProductOnLine(productName, lineId) {
+  if (!productName || !lineId) return null;
+  return recipes.find((r) => r.productionLineId === lineId && r.name === productName) ?? null;
 }
 
-export function getStageDurationsForProduct(productName) {
-  const r = getRecipeByName(productName);
+function pickRecipeForPlan(productName, lineId) {
+  if (!productName) return null;
+  if (lineId) {
+    const onLine = getRecipeForProductOnLine(productName, lineId);
+    if (onLine) return onLine;
+  }
+  return getRecipeByName(productName);
+}
+
+function sumLegacyStageMinutes(d) {
+  if (!d) return 0;
+  return (d.mixing || 0) + (d.makeupDividing || 0) + (d.makeupPanning || 0) + (d.baking || 0) + (d.packaging || 0);
+}
+
+// When the recipe stores a processProfileIds[procId], use live getProfileTotalMinutes from the line — so changing
+// equipment/process times on Production updates dashboard/scheduling without re-saving the recipe. Stale pd['mixing']
+// alone used to win and could stick at 282 while the profile was 299.
+function overlayProfileMinutes(r, durations) {
+  const lineId = r.productionLineId;
+  const profileIds = r.processProfileIds && typeof r.processProfileIds === 'object' ? r.processProfileIds : null;
+  if (!profileIds || !lineId) return durations;
+  const out = { ...durations };
+  for (const procId of LEGACY_PROCESS_IDS) {
+    const legacyKey = PROCESS_ID_TO_LEGACY_KEY[procId];
+    const pid = profileIds[procId];
+    if (!pid || !legacyKey) continue;
+    const live = Number(getProfileTotalMinutes(lineId, procId, pid)) || 0;
+    if (live > 0) out[legacyKey] = live;
+  }
+  return out;
+}
+
+function getStageDurationsFromRecipe(r) {
   if (!r) return null;
   const pd = r.processDurations && typeof r.processDurations === 'object'
     ? r.processDurations
@@ -185,10 +216,11 @@ export function getStageDurationsForProduct(productName) {
   };
 
   const anyNonZero = Object.values(base).some((v) => Number(v) > 0);
-  if (anyNonZero) return base;
+  if (anyNonZero) {
+    return overlayProfileMinutes(r, base);
+  }
 
-  // Newer recipes can store only `processProfileIds` and leave legacy durations at 0.
-  // In that case, derive per-stage minutes from the selected process profiles.
+  // Newer recipes can store only processProfileIds and leave legacy durations at 0.
   const profileIds = r.processProfileIds && typeof r.processProfileIds === 'object' ? r.processProfileIds : null;
   if (!profileIds) return base;
 
@@ -201,8 +233,18 @@ export function getStageDurationsForProduct(productName) {
     if (!selectedProfileId) continue;
     derived[legacyKey] = Number(getProfileTotalMinutes(lineId, procId, selectedProfileId)) || 0;
   }
-  const total = derived.mixing + derived.makeupDividing + derived.makeupPanning + derived.baking + derived.packaging;
+  const total = sumLegacyStageMinutes(derived);
   return total > 0 ? derived : null;
+}
+
+// which step counts as "end dough" on the grid — default mixing if recipe forgot to set it
+export function getEndDoughProcessIdForProduct(productName, productionLineId = null) {
+  const r = pickRecipeForPlan(productName, productionLineId);
+  return (r && r.endDoughProcessId) ? r.endDoughProcessId : 'mixing';
+}
+
+export function getStageDurationsForProduct(productName) {
+  return getStageDurationsFromRecipe(getRecipeByName(productName));
 }
 
 export function getTotalProcessMinutes(productName) {
@@ -211,23 +253,82 @@ export function getTotalProcessMinutes(productName) {
   return (d.mixing || 0) + (d.makeupDividing || 0) + (d.makeupPanning || 0) + (d.baking || 0) + (d.packaging || 0);
 }
 
+/** One process column: linked profile wins (live total), else stored processDurations[processId]. */
+export function getProcessMinutesForRecipeOnLine(recipe, lineId, processId) {
+  if (!recipe || !lineId || !processId) return 0;
+  const pd = recipe.processDurations && typeof recipe.processDurations === 'object'
+    ? recipe.processDurations
+    : legacyToProcessDurations(recipe);
+  const profileIds = recipe.processProfileIds && typeof recipe.processProfileIds === 'object' ? recipe.processProfileIds : {};
+  const pid = profileIds[processId];
+  if (pid) {
+    const live = Number(getProfileTotalMinutes(lineId, processId, pid)) || 0;
+    if (live > 0) return live;
+  }
+  return Number(pd[processId]) || 0;
+}
+
+// Scheduling/recomputeEndTimes need { mixing, makeupDividing, … }. Recipe UI saves processDurations under each
+// line tab’s real id (`mixing` or `proc-…`). getStageDurationsFromRecipe only read hard-coded keys, so we got all
+// zeros → null → SKU fallback (Everyday Bread 8s → 282) even when the recipe + profiles were correct.
+function buildLegacyStageDurationsFromLineRecipe(recipe, lineId) {
+  if (!recipe || !lineId) return null;
+  const procs = getProcessesForLine(lineId);
+  if (!Array.isArray(procs) || procs.length === 0) return null;
+
+  const sorted = [...procs].sort((a, b) => (Number(a.order) || 0) - (Number(b.order) || 0));
+  const result = {
+    mixing: 0,
+    makeupDividing: 0,
+    makeupPanning: 0,
+    baking: 0,
+    packaging: 0,
+  };
+
+  const allOpaque =
+    sorted.length === LEGACY_PROCESS_IDS.length &&
+    sorted.every((p) => p?.id && !LEGACY_PROCESS_IDS.includes(String(p.id)));
+
+  sorted.forEach((p, idx) => {
+    const mins = getProcessMinutesForRecipeOnLine(recipe, lineId, p.id);
+    let legacyKey = PROCESS_ID_TO_LEGACY_KEY[p.id];
+    if (!legacyKey) {
+      const sidLower = String(p.id || '').toLowerCase();
+      const found = LEGACY_PROCESS_IDS.find((id) => id.toLowerCase() === sidLower);
+      if (found) legacyKey = PROCESS_ID_TO_LEGACY_KEY[found];
+    }
+    if (!legacyKey && allOpaque && idx < LEGACY_KEYS.length) {
+      legacyKey = LEGACY_KEYS[idx];
+    }
+    if (legacyKey) {
+      result[legacyKey] = Number(mins) || 0;
+    }
+  });
+
+  const total = sumLegacyStageMinutes(result);
+  return total > 0 ? result : null;
+}
+
+export function getStageDurationsForProductOnLine(productName, lineId) {
+  const r = pickRecipeForPlan(productName, lineId);
+  if (!r) return null;
+  if (lineId) {
+    const fromLine = buildLegacyStageDurationsFromLineRecipe(r, lineId);
+    if (fromLine) return fromLine;
+  }
+  return getStageDurationsFromRecipe(r);
+}
+
 // sum minutes only for processes that actually exist on that line (custom lines may omit a stage)
 export function getTotalProcessMinutesForLine(productName, lineId) {
-  const r = getRecipeByName(productName);
+  const r = pickRecipeForPlan(productName, lineId);
   if (!r || !lineId) return getTotalProcessMinutes(productName);
   const procs = getProcessesForLine(lineId);
-  if (!procs.length) return getTotalProcessMinutes(productName);
-  const pd = r.processDurations || legacyToProcessDurations(r);
-  const sumFromDurations = procs.reduce((sum, p) => sum + (Number(pd[p.id]) || 0), 0);
-  if (sumFromDurations > 0) return sumFromDurations;
-  const profileIds = r.processProfileIds && typeof r.processProfileIds === 'object' ? r.processProfileIds : {};
-  const sumFromProfiles = procs.reduce((sum, p) => {
-    const profileId = profileIds[p.id];
-    if (!profileId) return sum;
-    const mins = getProfileTotalMinutes(lineId, p.id, profileId);
-    return sum + (Number(mins) || 0);
-  }, 0);
-  return sumFromProfiles > 0 ? sumFromProfiles : 0;
+  if (!procs.length) {
+    const d = getStageDurationsFromRecipe(r);
+    return d ? sumLegacyStageMinutes(d) : 0;
+  }
+  return procs.reduce((sum, p) => sum + getProcessMinutesForRecipeOnLine(r, lineId, p.id), 0);
 }
 
 export function setRecipes(next) {

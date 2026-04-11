@@ -228,7 +228,7 @@ export default function ProductionView() {
   const seeTagsRootRefs = useRef({});
 
   const pipelineHelpText =
-    'Marks a step as a pipelining breakpoint. Stagger minutes = this step’s own duration only (not minus the step before it, not sum through here). If several steps are checked, the smallest duration wins. Next batch start = previous start + that stagger when pipelining applies.';
+    'Pipelining breakpoint: stagger between batch starts uses this row’s own minutes (smallest wins if several checked). Those minutes are not added into the profile total — they overlap the rest of the chain while wall-clock time advances. Leave Pipeline off if this step should extend the process duration instead.';
 
   useEffect(() => {
     const next = getLines();
@@ -1179,8 +1179,13 @@ export default function ProductionView() {
                                 )}
                               </div>
                               {selectedProfileId ? (
-                              <section className="border border-gray-200 rounded-xl bg-gray-50/50 p-3 sm:p-4 mt-2 flex flex-col min-w-0" aria-label={`Mixing profile ${profileTotalMinutes} min`}>
-                                <h4 className="text-xs sm:text-sm md:text-base font-semibold text-gray-800 mb-3 shrink-0">Mixing profile — {profileTotalMinutes} min total</h4>
+                              <section className="border border-gray-200 rounded-xl bg-gray-50/50 p-3 sm:p-4 mt-2 flex flex-col min-w-0" aria-label={`${proc.name} profile ${profileTotalMinutes} min sequential total`}>
+                                <h4 className="text-xs sm:text-sm md:text-base font-semibold text-gray-800 mb-1 shrink-0">
+                                  {proc.name} profile — {profileTotalMinutes} min total
+                                </h4>
+                                <p className="text-[0.65rem] sm:text-xs text-gray-600 mb-3 shrink-0">
+                                  Total counts only rows without Pipeline checked. Pipeline rows still set stagger spacing between batch starts.
+                                </p>
                                 {stepOrderDuplicateError && (
                                   <p className="text-xs sm:text-sm text-red-600 mb-2">{stepOrderDuplicateError}</p>
                                 )}

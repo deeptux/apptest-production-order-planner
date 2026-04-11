@@ -642,16 +642,27 @@ export function getMixingProfiles(lineId, processId) {
     : [];
 }
 
-// sum all equipment minutes + process time minutes — UI shows this in the profile picker
+// Sequential wall-clock total for this process profile: equipment + process-time rows, but **skip** any row with
+// Pipeline checked. Those minutes are the pipelining / overlap window (see getStaggerMinutesFromMixingProfiles), not
+// extra length on top of the physical chain. E.g. Gap 30 with Pipeline on → stagger stays 30, total drops by 30
+// (Sponge+Ferm+Dough only: 7+240+22) so recipe + scheduling don’t double-count the gap.
 export function getProfileTotalMinutes(lineId, processId, profileId) {
   const line = lines.find((l) => l.id === lineId);
   if (!line || !line.mixingProfilesByProcess) return 0;
   const list = line.mixingProfilesByProcess[processId];
   const profile = Array.isArray(list) ? list.find((mp) => mp.id === profileId) : null;
   if (!profile) return 0;
+  const eqMinutes = profile.equipmentMinutes || {};
   let total = 0;
-  Object.values(profile.equipmentMinutes || {}).forEach((v) => { if (v != null && !Number.isNaN(Number(v))) total += Number(v); });
-  (profile.processTimes || []).forEach((pt) => { total += Number(pt.minutes) || 0; });
+  for (const e of profile.equipment || []) {
+    if (e?.isPipelineStagger) continue;
+    const v = eqMinutes[e.id];
+    if (v != null && !Number.isNaN(Number(v))) total += Number(v);
+  }
+  for (const pt of profile.processTimes || []) {
+    if (pt?.isPipelineStagger) continue;
+    total += Number(pt.minutes) || 0;
+  }
   return total;
 }
 

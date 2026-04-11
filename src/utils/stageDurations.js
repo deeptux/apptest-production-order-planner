@@ -1,8 +1,20 @@
-import { getStageDurationsForProduct as getFromRecipe, getTotalProcessMinutes as getTotalFromRecipe, getEndDoughProcessIdForProduct } from '../store/recipeStore.js';
+import {
+  getStageDurationsForProduct as getFromRecipe,
+  getStageDurationsForProductOnLine as getFromRecipeOnLine,
+  getTotalProcessMinutes as getTotalFromRecipe,
+  getTotalProcessMinutesForLine,
+  getEndDoughProcessIdForProduct,
+} from '../store/recipeStore.js';
+import { getProcessesForLine } from '../store/productionLinesStore.js';
 import { getStageDurationsForProduct as getFromSku, getTotalProcessMinutes as getTotalFromSku } from '../data/skuProcessDurations.js';
 
-function getStageDurationsForProduct(productName) {
-  return getFromRecipe(productName) ?? getFromSku(productName);
+function recipeStagesForProduct(productName, productionLineId) {
+  const onLine = productionLineId && getFromRecipeOnLine(productName, productionLineId);
+  return onLine || getFromRecipe(productName) || null;
+}
+
+function getStageDurationsForProduct(productName, productionLineId) {
+  return recipeStagesForProduct(productName, productionLineId) ?? getFromSku(productName);
 }
 
 // loaf line process chain — used when we sum minutes up to "end dough" for a given recipe step
@@ -14,6 +26,48 @@ const PROCESS_ID_TO_LEGACY_KEY = {
   'baking': 'baking',
   'packaging': 'packaging',
 };
+
+// Default Production tab names -> canonical id (when line stores proc-* ids but names match loaf stages).
+const PROCESS_NAME_TO_LEGACY_ID = {
+  mixing: 'mixing',
+  'makeup dividing': 'makeup-dividing',
+  'makeup panning': 'makeup-panning',
+  baking: 'baking',
+  packaging: 'packaging',
+};
+
+/**
+ * Map a line's process tab id to a canonical loaf stage id (`mixing`, `makeup-dividing`, …).
+ * Dashboard/PlanTable need this when `addProcess` created opaque ids (`proc-…`) — without it we fall back to
+ * raw row.startSponge / row.endDough on every tab (same start; end dough = whole-row field, not stage end).
+ */
+export function resolveLegacySectionIdForRowContext(sectionId, sortedProcesses) {
+  if (sectionId == null || sectionId === '') return null;
+  const sid = String(sectionId);
+
+  if (END_DOUGH_ORDER.includes(sid)) return sid;
+
+  const sidLower = sid.toLowerCase();
+  const byCase = END_DOUGH_ORDER.find((id) => id.toLowerCase() === sidLower);
+  if (byCase) return byCase;
+
+  const list = Array.isArray(sortedProcesses) ? sortedProcesses : [];
+  const proc = list.find((p) => p.id === sid);
+  if (proc) {
+    const n = String(proc.name || '').trim().toLowerCase();
+    if (PROCESS_NAME_TO_LEGACY_ID[n]) return PROCESS_NAME_TO_LEGACY_ID[n];
+  }
+
+  const idx = list.findIndex((p) => p.id === sid);
+  const allIdsOpaque =
+    list.length === END_DOUGH_ORDER.length &&
+    list.length > 0 &&
+    list.every((p) => p?.id && !END_DOUGH_ORDER.includes(String(p.id)));
+  if (idx >= 0 && allIdsOpaque) {
+    return END_DOUGH_ORDER[idx];
+  }
+  return null;
+}
 
 // running sum of stage minutes through the chosen process — drives "end dough" time on the schedule
 function getCumulativeMinutesUpToProcess(stages, processId) {
@@ -27,10 +81,14 @@ function getCumulativeMinutesUpToProcess(stages, processId) {
   return sum;
 }
 
-function getTotalProcessMinutes(productName) {
-  const total = getTotalFromRecipe(productName);
+function getTotalProcessMinutesForPlanRow(row) {
+  if (row?.productionLineId) {
+    const t = getTotalProcessMinutesForLine(row.product, row.productionLineId);
+    if (t > 0) return t;
+  }
+  const total = getTotalFromRecipe(row.product);
   if (total > 0) return total;
-  return getTotalFromSku(productName) ?? 0;
+  return getTotalFromSku(row.product) ?? 0;
 }
 
 const DAY_MINUTES = 24 * 60;
@@ -59,7 +117,7 @@ export function addMinutesToTime(timeStr, minutes) {
 }
 
 export function computeTotalMinutesForRow(row) {
-  const total = getTotalProcessMinutes(row.product);
+  const total = getTotalProcessMinutesForPlanRow(row);
   if (total > 0) return total;
   const base = Number(row.procTime);
   if (!Number.isNaN(base) && base > 0) return base;
@@ -98,7 +156,7 @@ export function computeStageDurations(totalMinutes) {
 
 // prefer recipe/SKU table minutes; if product missing, fake it from total time * STAGE_RATIOS
 export function computeStageDurationsForRow(row) {
-  const sku = getStageDurationsForProduct(row.product);
+  const sku = getStageDurationsForProduct(row.product, row.productionLineId);
   if (sku) return { ...sku };
   const total = computeTotalMinutesForRow(row);
   return computeStageDurations(total);
@@ -112,8 +170,23 @@ export function recomputeEndTimesForRow(row) {
   if (!total || !row.startSponge || typeof row.startSponge !== 'string') {
     return { endDough: row.endDough ?? '00:00', endBatch: row.endBatch ?? '00:00' };
   }
-  const endDoughProcessId = getEndDoughProcessIdForProduct(row.product);
-  const endDoughMinutes = getCumulativeMinutesUpToProcess(stages, endDoughProcessId);
+  const rawEndDoughId = getEndDoughProcessIdForProduct(row.product, row.productionLineId);
+  // Recipe stores the line’s real tab id (often `proc-*`). Cumulative math only knows canonical loaf ids.
+  const sortedProcesses = row.productionLineId
+    ? getProcessesForLine(row.productionLineId).map((p, i) => ({
+        id: p.id,
+        name: p.name,
+        order: p.order ?? i,
+      }))
+    : [];
+  let canonEnd = resolveLegacySectionIdForRowContext(rawEndDoughId, sortedProcesses);
+  if (canonEnd == null && typeof rawEndDoughId === 'string' && END_DOUGH_ORDER.includes(rawEndDoughId)) {
+    canonEnd = rawEndDoughId;
+  }
+  if (canonEnd == null) {
+    canonEnd = 'mixing';
+  }
+  const endDoughMinutes = getCumulativeMinutesUpToProcess(stages, canonEnd);
   const endDough = addMinutesToTime(row.startSponge, endDoughMinutes);
   const endBatch = addMinutesToTime(row.startSponge, total);
   return { endDough, endBatch };
@@ -126,7 +199,9 @@ const STAGE_KEYS_ORDERED = ['mixing', 'makeupDividing', 'makeupPanning', 'baking
 // anything else -> split total time evenly across N processes (best we can do)
 export function getProcMinutesForPlanSection(row, sectionId, sortedProcesses) {
   const stages = computeStageDurationsForRow(row);
-  const legacyKey = PROCESS_ID_TO_LEGACY_KEY[sectionId];
+  const canon = resolveLegacySectionIdForRowContext(sectionId, sortedProcesses);
+  const idForLegacy = canon || sectionId;
+  const legacyKey = PROCESS_ID_TO_LEGACY_KEY[idForLegacy];
   if (legacyKey) {
     const v = stages[legacyKey];
     return v != null && !Number.isNaN(Number(v)) ? Number(v) : null;
@@ -152,13 +227,15 @@ export function getProcMinutesForPlanSection(row, sectionId, sortedProcesses) {
   return Math.max(1, Math.round(total / n));
 }
 
-export function isLegacyProcessSectionId(sectionId) {
-  return END_DOUGH_ORDER.includes(sectionId);
+export function isLegacyProcessSectionId(sectionId, sortedProcesses = null) {
+  return resolveLegacySectionIdForRowContext(sectionId, sortedProcesses) != null;
 }
 
-export function getProcessWindowStartOffsetMinutes(row, sectionId) {
-  if (!isLegacyProcessSectionId(sectionId)) return null;
-  const idx = END_DOUGH_ORDER.indexOf(sectionId);
+export function getProcessWindowStartOffsetMinutes(row, sectionId, sortedProcesses = null) {
+  const canon = resolveLegacySectionIdForRowContext(sectionId, sortedProcesses);
+  if (!canon) return null;
+  const idx = END_DOUGH_ORDER.indexOf(canon);
+  if (idx < 0) return null;
   const stages = computeStageDurationsForRow(row);
   let sum = 0;
   for (let i = 0; i < idx; i++) {
@@ -168,9 +245,11 @@ export function getProcessWindowStartOffsetMinutes(row, sectionId) {
   return sum;
 }
 
-export function getProcessWindowEndOffsetMinutes(row, sectionId) {
-  if (!isLegacyProcessSectionId(sectionId)) return null;
-  const idx = END_DOUGH_ORDER.indexOf(sectionId);
+export function getProcessWindowEndOffsetMinutes(row, sectionId, sortedProcesses = null) {
+  const canon = resolveLegacySectionIdForRowContext(sectionId, sortedProcesses);
+  if (!canon) return null;
+  const idx = END_DOUGH_ORDER.indexOf(canon);
+  if (idx < 0) return null;
   const stages = computeStageDurationsForRow(row);
   let sum = 0;
   for (let i = 0; i <= idx; i++) {
@@ -180,11 +259,37 @@ export function getProcessWindowEndOffsetMinutes(row, sectionId) {
   return sum;
 }
 
-export function getAlignedLegacyProcessProcMinutes(row, sectionId) {
-  const start = getProcessWindowStartOffsetMinutes(row, sectionId);
-  const end = getProcessWindowEndOffsetMinutes(row, sectionId);
+export function getAlignedLegacyProcessProcMinutes(row, sectionId, sortedProcesses = null) {
+  const start = getProcessWindowStartOffsetMinutes(row, sectionId, sortedProcesses);
+  const end = getProcessWindowEndOffsetMinutes(row, sectionId, sortedProcesses);
   if (start === null || end === null) return null;
   return Math.max(0, Math.round(end - start));
+}
+
+// Dashboard / PlanTable: minutes from batch anchor (sponge) to this tab's window [start, end).
+// If we can map the tab to the loaf chain, we use recipe stage sums; otherwise we chain in **line process order**
+// (whatever the user set on Production) using per-tab minutes from getProcMinutesForPlanSection — no fixed id list required.
+export function getProcessTimelineOffsetsMinutes(row, sectionId, sortedProcesses) {
+  const list = Array.isArray(sortedProcesses) ? sortedProcesses : [];
+  const idx = list.findIndex((p) => p.id === sectionId);
+  if (idx < 0) return null;
+
+  const canon = resolveLegacySectionIdForRowContext(sectionId, sortedProcesses);
+  if (canon != null) {
+    const startOff = getProcessWindowStartOffsetMinutes(row, sectionId, sortedProcesses);
+    const endOff = getProcessWindowEndOffsetMinutes(row, sectionId, sortedProcesses);
+    if (startOff == null || endOff == null) return null;
+    return { startOff, endOff };
+  }
+
+  let startOff = 0;
+  for (let i = 0; i < idx; i++) {
+    const m = getProcMinutesForPlanSection(row, list[i].id, list);
+    startOff += Number(m) || 0;
+  }
+  const selfM = getProcMinutesForPlanSection(row, sectionId, list);
+  const self = Number(selfM) || 0;
+  return { startOff, endOff: startOff + self };
 }
 
 export { DAY_MINUTES };

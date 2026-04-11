@@ -1,8 +1,9 @@
 // fallback minutes when recipe store doesn't have the product yet — typed from Process Duration.xlsx (NPB ref)
 // mixing column = sponge mixing through floor time; IP/FP = dividing/panning; packaging includes cooling+pack in the sheet
+// If your real line uses a different total (e.g. 299 from a Process Profile), set that on the recipe / profile — this table is not auto-synced.
 export const SKU_PROCESS_DURATIONS = {
   'Everyday Bread 8s': {
-    mixing: 282,       // Sponge Mixing to Floor Time (SL)
+    mixing: 282,       // spreadsheet "SL" row — not necessarily your live profile minutes
     makeupDividing: 17,
     makeupPanning: 60,
     baking: 38,
