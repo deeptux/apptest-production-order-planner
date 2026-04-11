@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { Plus, Pencil, Trash2, Check, X, Search } from 'lucide-react';
+import { Plus, Pencil, Trash2, Check, X, Search, ChevronDown } from 'lucide-react';
 import * as Tabs from '@radix-ui/react-tabs';
 import * as Dialog from '@radix-ui/react-dialog';
 import * as Tooltip from '@radix-ui/react-tooltip';
@@ -22,8 +22,10 @@ import {
   getProfileTotalMinutes,
   addMixingProfile,
   deleteMixingProfile,
-  getTagForMixingProfile,
-  setTagForMixingProfile,
+  getTagsForMixingProfile,
+  addTagToMixingProfile,
+  removeTagFromMixingProfile,
+  addProfileTagForLine,
   getEquipmentForProfile,
   getEquipmentMinutesForProfile,
   setEquipmentMinutesForProfile,
@@ -221,8 +223,12 @@ export default function ProductionView() {
   const [tagModalOpen, setTagModalOpen] = useState(false);
   const [tagDraft, setTagDraft] = useState('');
   const [tagTarget, setTagTarget] = useState(null); // { lineId, processId, profileId } | null
+  // Custom "See Tags" menu (native <select> can't do per-row delete); key = `${lineId}-${proc.id}`
+  const [seeTagsOpenKey, setSeeTagsOpenKey] = useState(null);
+  const seeTagsRootRefs = useRef({});
 
-  const pipelineHelpText = 'Marks a step as a pipelining breakpoint. This enables pipelined batching so multiple batches can be executed within the same process before the previous batch finishes the entire line.';
+  const pipelineHelpText =
+    'Marks a step as a pipelining breakpoint. Stagger minutes = this step’s own duration only (not minus the step before it, not sum through here). If several steps are checked, the smallest duration wins. Next batch start = previous start + that stagger when pipelining applies.';
 
   useEffect(() => {
     const next = getLines();
@@ -307,6 +313,18 @@ export default function ProductionView() {
     document.addEventListener('mousedown', onMouseDown);
     return () => document.removeEventListener('mousedown', onMouseDown);
   }, [equipmentDropdownOpen]);
+
+  useEffect(() => {
+    if (!seeTagsOpenKey) return;
+    const onMouseDown = (e) => {
+      const root = seeTagsRootRefs.current[seeTagsOpenKey];
+      if (root?.contains(e.target)) return;
+      setSeeTagsOpenKey(null);
+    };
+    document.addEventListener('mousedown', onMouseDown);
+    return () => document.removeEventListener('mousedown', onMouseDown);
+  }, [seeTagsOpenKey]);
+
   const refreshCapacity = useCallback(() => {
     setCapacityProfileState(getCapacityProfileForLine(selectedLineId));
   }, [selectedLineId]);
@@ -928,7 +946,7 @@ export default function ProductionView() {
                   {/* Process line + Machines/Equipment */}
                   <div>
                     <h3 className="p-2 sm:p-3 border-b border-gray-200 bg-surface-card-warm text-xs sm:text-sm md:text-base 2xl:text-lg font-semibold text-gray-800">
-                      Process line — {line.name}
+                      Process Chain Line — {line.name}
                     </h3>
                     <div className="p-3 sm:p-4">
                   {(() => {
@@ -1043,32 +1061,80 @@ export default function ProductionView() {
                                 </div>
                                 {selectedLineId === line.id && (
                                   <div className="flex flex-wrap gap-2 items-center">
-                                    <label className="text-xs sm:text-sm text-gray-600">
-                                      {proc.name} profile:
+                                    <label className="text-xs sm:text-sm text-gray-600 shrink-0">
+                                      {proc.name} profile tags:
                                     </label>
-                                    {selectedProfileId && (
+                                    {selectedProfileId && (() => {
+                                      const tagsOnProfile = getTagsForMixingProfile(line.id, proc.id, selectedProfileId);
+                                      return (
                                       <>
-                                        <select
-                                          value={getTagForMixingProfile(line.id, proc.id, selectedProfileId) || ''}
-                                          onChange={(e) => { setTagForMixingProfile(line.id, proc.id, selectedProfileId, e.target.value); setLinesState(getLines()); }}
-                                          className="border border-gray-300 rounded-lg px-2 py-1.5 text-xs sm:text-sm bg-white min-w-[140px]"
-                                          title="Tag this process profile"
+                                        <div
+                                          className="relative shrink-0"
+                                          ref={(el) => {
+                                            if (el) seeTagsRootRefs.current[key] = el;
+                                            else delete seeTagsRootRefs.current[key];
+                                          }}
                                         >
-                                          <option value="">— Tag —</option>
-                                          {(() => {
-                                            const current = getTagForMixingProfile(line.id, proc.id, selectedProfileId) || '';
-                                            return current ? <option value={current}>{current}</option> : null;
-                                          })()}
-                                        </select>
+                                          <button
+                                            type="button"
+                                            aria-expanded={seeTagsOpenKey === key}
+                                            aria-haspopup="listbox"
+                                            onClick={() => setSeeTagsOpenKey((k) => (k === key ? null : key))}
+                                            className="inline-flex items-center justify-between gap-2 min-w-[140px] max-w-[220px] border border-gray-300 rounded-lg px-2 py-1.5 text-xs sm:text-sm bg-white text-left text-gray-800 hover:bg-gray-50"
+                                          >
+                                            <span className="truncate">See Tags</span>
+                                            <ChevronDown className={`w-4 h-4 shrink-0 text-gray-500 transition-transform ${seeTagsOpenKey === key ? 'rotate-180' : ''}`} aria-hidden />
+                                          </button>
+                                          {seeTagsOpenKey === key ? (
+                                            <div
+                                              className="absolute left-0 top-full z-[80] mt-1 min-w-[min(100vw-2rem,280px)] w-max max-w-[min(100vw-2rem,320px)] rounded-lg border border-gray-200 bg-white shadow-lg py-1 max-h-[min(50vh,280px)] overflow-y-auto"
+                                              role="listbox"
+                                              aria-label="Tags on this process profile"
+                                            >
+                                              {tagsOnProfile.length === 0 ? (
+                                                <div className="px-3 py-2.5 text-xs text-gray-500">No tags yet. Use Add tag.</div>
+                                              ) : (
+                                                tagsOnProfile.map((tagLabel) => (
+                                                  <div
+                                                    key={tagLabel}
+                                                    role="presentation"
+                                                    className="flex items-center gap-2 px-2 py-1.5 text-xs sm:text-sm border-b border-gray-100 last:border-b-0"
+                                                  >
+                                                    <span className="flex-1 min-w-0 truncate text-gray-800 select-none pointer-events-none" title={tagLabel}>
+                                                      {tagLabel}
+                                                    </span>
+                                                    <button
+                                                      type="button"
+                                                      className="inline-flex items-center justify-center p-1 rounded-md border border-red-200 bg-red-50 text-red-700 hover:bg-red-100 shrink-0"
+                                                      aria-label={`Delete tag ${tagLabel}`}
+                                                      onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        removeTagFromMixingProfile(line.id, proc.id, selectedProfileId, tagLabel);
+                                                        setLinesState(getLines());
+                                                      }}
+                                                    >
+                                                      <Trash2 className="w-3.5 h-3.5" aria-hidden />
+                                                    </button>
+                                                  </div>
+                                                ))
+                                              )}
+                                            </div>
+                                          ) : null}
+                                        </div>
                                         <button
                                           type="button"
-                                          onClick={() => { setTagDraft(''); setTagTarget({ lineId: line.id, processId: proc.id, profileId: selectedProfileId }); setTagModalOpen(true); }}
-                                          className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-gray-300 bg-white text-gray-700 text-xs sm:text-sm font-medium hover:bg-gray-100"
+                                          onClick={() => {
+                                            setTagDraft('');
+                                            setTagTarget({ lineId: line.id, processId: proc.id, profileId: selectedProfileId });
+                                            setTagModalOpen(true);
+                                          }}
+                                          className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-gray-300 bg-white text-gray-700 text-xs sm:text-sm font-medium hover:bg-gray-100 shrink-0"
                                         >
                                           <Plus className="w-4 h-4" /> Add tag
                                         </button>
                                       </>
-                                    )}
+                                      );
+                                    })()}
                                     <select
                                       value={selectedProfileId ?? ''}
                                       onChange={(e) => setSelectedMixingProfileId((p) => ({ ...p, [key]: e.target.value || null }))}
@@ -1287,7 +1353,7 @@ export default function ProductionView() {
                                               setLinesState(getLines());
                                             }}
                                             disabled={equipmentEdit?.lineId === line.id && equipmentEdit?.sectionId === proc.id && equipmentEdit?.itemId === item.id}
-                                            title="When enabled, pipelined batching uses the cumulative minutes up to this step as the stagger."
+                                            title="When enabled, stagger = this row’s own minutes only. Several checked: smallest wins."
                                           />
                                         </td>
                                         <td className="py-2 px-2">
@@ -1476,7 +1542,7 @@ export default function ProductionView() {
                                               setLinesState(getLines());
                                             }}
                                             disabled={isEditingPt && processTimeEdit?.processTimeId === pt.id}
-                                            title="When enabled, this process time's minutes will be used as the stagger for pipelined batching on this line."
+                                            title="When enabled, stagger = this row’s own minutes only. Several checked: smallest wins."
                                           />
                                         </td>
                                         <td className="py-2 px-2">
@@ -1556,7 +1622,9 @@ export default function ProductionView() {
           <Dialog.Overlay className="fixed inset-0 bg-black/50 z-40" />
           <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-full max-w-md -translate-x-1/2 -translate-y-1/2 rounded-lg border border-gray-200 bg-white p-4 sm:p-6 shadow-lg">
             <Dialog.Title className="text-base sm:text-lg font-semibold text-gray-900">Add tag</Dialog.Title>
-            <p className="text-xs sm:text-sm text-gray-600 mt-1">Tags can be assigned to process profiles for organization and filtering.</p>
+            <p className="text-xs sm:text-sm text-gray-600 mt-1">
+              You can stack several tags on the same process profile (e.g. 8s, EB, Everyday Bread). New names are also saved to this line&apos;s tag list for quick re-use.
+            </p>
             <div className="mt-4">
               <label className="block text-xs font-medium text-gray-600 mb-1">Tag name</label>
               <input
@@ -1578,7 +1646,8 @@ export default function ProductionView() {
                 onClick={() => {
                   const trimmed = tagDraft.trim();
                   if (!trimmed || !tagTarget) return;
-                  setTagForMixingProfile(tagTarget.lineId, tagTarget.processId, tagTarget.profileId, trimmed);
+                  addProfileTagForLine(tagTarget.lineId, trimmed);
+                  addTagToMixingProfile(tagTarget.lineId, tagTarget.processId, tagTarget.profileId, trimmed);
                   setLinesState(getLines());
                   setTagModalOpen(false);
                   setTagDraft('');

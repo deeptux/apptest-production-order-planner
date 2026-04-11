@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
-import { Plus, Trash2, Pencil } from 'lucide-react';
+import { Plus, Trash2, Pencil, CircleHelp } from 'lucide-react';
 import * as Dialog from '@radix-ui/react-dialog';
 import * as Tabs from '@radix-ui/react-tabs';
 import * as Tooltip from '@radix-ui/react-tooltip';
@@ -40,8 +40,102 @@ function snapshotRestrictedEditFields(r) {
   };
 }
 
+// Batch count + per-batch piece sizes — keep in sync with planStore buildNewRowsFromModal.
+// Total Quantity wins when > 0 and yield exists; else ceil(theorOutput / capacity) with capacity-sized chunks.
+function computeModalBatchSplit(form, getYield, getCapacity) {
+  const totalQty = Number(form.soQty) || 0;
+  const yieldPer = form.product && form.productionLineId ? getYield(form.product, form.productionLineId) : null;
+  const capacity = form.product && form.productionLineId ? getCapacity(form.product, form.productionLineId) : null;
+  const salesOrderNum = form.salesOrder !== '' && form.salesOrder !== undefined && !Number.isNaN(Number(form.salesOrder)) ? Number(form.salesOrder) : 0;
+  const computedSoCo = Math.max(0, salesOrderNum - (Number(form.carryOverExcess) || 0));
+  const samples = Number(form.samples) || 2;
+  const theorOutput =
+    form.theorOutputOverride !== undefined && form.theorOutputOverride !== '' && !Number.isNaN(Number(form.theorOutputOverride))
+      ? Number(form.theorOutputOverride)
+      : computedSoCo + (Number(form.exchangeForLoss) || 0) + (Number(form.excess) || 0) + samples;
+
+  const useTotalQty = totalQty > 0 && yieldPer != null && yieldPer > 0;
+  const batchSize = useTotalQty ? yieldPer : capacity;
+  const demand = useTotalQty ? totalQty : theorOutput;
+
+  if (batchSize == null || batchSize <= 0 || demand <= 0) {
+    return {
+      useTotalQty,
+      demand,
+      theorOutput,
+      batchSize: batchSize ?? null,
+      yieldPer,
+      capacity,
+      numBatches: null,
+      batchQuantities: [],
+    };
+  }
+
+  const numBatches = Math.ceil(demand / batchSize);
+  const batchQuantities = [];
+  let rem = demand;
+  for (let i = 0; i < numBatches; i++) {
+    const pc = i < numBatches - 1 ? batchSize : Math.min(batchSize, rem);
+    batchQuantities.push(pc);
+    rem -= pc;
+  }
+
+  return {
+    useTotalQty,
+    demand,
+    theorOutput,
+    batchSize,
+    yieldPer,
+    capacity,
+    numBatches,
+    batchQuantities,
+  };
+}
+
+function batchOrdinalLabel(n) {
+  const s = ['th', 'st', 'nd', 'rd'];
+  const v = n % 100;
+  return n + (s[(v - 20) % 10] || s[v] || s[0]);
+}
+
+// Add Schedule modal: capacity is only for the non–Total-Qty split path; keep it out of the main grid (tooltip by yield label).
+const ADD_SCHEDULE_CAPACITY_TOOLTIP_NOTE =
+  'Read-only. When Total Quantity is empty, batch count follows Theoretical Output ÷ Capacity (same rule as Sales Order tab / plan store).';
+
+function AddScheduleYieldLabelWithCapacityTooltip({ capacity }) {
+  const capStr = capacity != null && !Number.isNaN(Number(capacity)) ? String(capacity) : '—';
+  return (
+    <div className="flex items-center gap-1 mb-0.5">
+      <span className="text-xs font-medium text-gray-600">Theoretical Yield / Batch</span>
+      <Tooltip.Root>
+        <Tooltip.Trigger asChild>
+          <button
+            type="button"
+            className="inline-flex items-center justify-center rounded-full text-gray-500 hover:text-gray-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 p-0.5 -m-0.5"
+            aria-label="Show Capacity: used when Total Quantity is empty (Theoretical Output ÷ Capacity)"
+          >
+            <CircleHelp className="w-3.5 h-3.5 shrink-0" aria-hidden />
+          </button>
+        </Tooltip.Trigger>
+        <Tooltip.Portal>
+          <Tooltip.Content
+            side="top"
+            sideOffset={6}
+            className="z-[100] max-w-[280px] rounded-lg border border-gray-200 bg-white px-3 py-2.5 shadow-lg text-xs text-gray-800"
+          >
+            <div className="font-semibold text-gray-900">Capacity</div>
+            <div className="tabular-nums font-medium text-gray-800 mt-1">{capStr}</div>
+            <p className="text-gray-600 mt-2 leading-snug">{ADD_SCHEDULE_CAPACITY_TOOLTIP_NOTE}</p>
+            <Tooltip.Arrow className="fill-white" width={12} height={6} />
+          </Tooltip.Content>
+        </Tooltip.Portal>
+      </Tooltip.Root>
+    </div>
+  );
+}
+
 export default function SchedulingView() {
-  const { planDate, setPlanDate, rows, setRows, reorderRows, insertBatchBreakWithReflow, previewSwapOrderBetweenRows, swapOrderBetweenRows, addBatch, addBatchesFromModal, previewInsertBatchesWithReflow, insertBatchesWithReflow, deleteBatch } = usePlan();
+  const { planDate, setPlanDate, rows, setRows, reorderRows, insertBatchBreakWithReflow, previewInsertBatchBreakWithReflow, previewSwapOrderBetweenRows, swapOrderBetweenRows, addBatch, addBatchesFromModal, previewInsertBatchesWithReflow, insertBatchesWithReflow, deleteBatch } = usePlan();
   const { show: showSnackbar } = useSnackbar() ?? {};
   const formatTime12h = useCallback((hhmm) => {
     if (!hhmm || typeof hhmm !== 'string') return '—';
@@ -167,7 +261,12 @@ export default function SchedulingView() {
   });
   const [addBatchValidationError, setAddBatchValidationError] = useState('');
   const [timeConflictOpen, setTimeConflictOpen] = useState(false);
-  const [timeConflictInfo, setTimeConflictInfo] = useState({ affectedRowIds: [] });
+  const [timeConflictInfo, setTimeConflictInfo] = useState({
+    affectedRowIds: [],
+    snappedTo: null,
+    requestedInput: null,
+    insertKind: 'batch',
+  });
   const [pendingAddBatchPayload, setPendingAddBatchPayload] = useState(null);
   const [addBatchSelectedBatchIndex, setAddBatchSelectedBatchIndex] = useState(0);
   const [selectedLineId, setSelectedLineId] = useState('all');
@@ -492,15 +591,48 @@ export default function SchedulingView() {
         setAddBatchValidationError('Batch Break End must be after Batch Break Start.');
         return;
       }
-      const result = typeof insertBatchBreakWithReflow === 'function'
-        ? insertBatchBreakWithReflow({
-            productionLineId: f.productionLineId,
-            date: f.date,
-            startSponge: f.startSponge,
-            breakEnd: f.breakEnd,
-            description: f.breakDescription,
-          })
-        : { success: false, error: 'Batch break insert is not available.' };
+      const rowDate = f.date && String(f.date).split('T')[0];
+      const todayStr = formatDateInput(new Date());
+      if (rowDate === todayStr) {
+        const now = new Date();
+        const nowStartOfMinute = Math.floor(now.getTime() / 60000) * 60000;
+        const reqStartMs = new Date(`${rowDate}T${f.startSponge}`).getTime();
+        if (Number.isNaN(reqStartMs) || reqStartMs < nowStartOfMinute) {
+          setAddBatchValidationError('When the schedule date is today, time blocker start cannot be in the past.');
+          return;
+        }
+        const reqEndMs = new Date(`${rowDate}T${f.breakEnd}`).getTime();
+        if (endM > startM && !Number.isNaN(reqEndMs) && reqEndMs < nowStartOfMinute) {
+          setAddBatchValidationError('When the schedule date is today, time blocker end cannot be in the past.');
+          return;
+        }
+      }
+      const breakPayload = {
+        productionLineId: f.productionLineId,
+        date: f.date,
+        startSponge: f.startSponge,
+        breakEnd: f.breakEnd,
+        description: f.breakDescription,
+      };
+      const breakPreview =
+        typeof previewInsertBatchBreakWithReflow === 'function'
+          ? previewInsertBatchBreakWithReflow(breakPayload)
+          : { hasConflict: false, affectedRowIds: [], snappedTo: null };
+      if (breakPreview?.hasConflict) {
+        setPendingAddBatchPayload(breakPayload);
+        setTimeConflictInfo({
+          affectedRowIds: breakPreview.affectedRowIds || [],
+          snappedTo: breakPreview.snappedTo || null,
+          requestedInput: { date: rowDate, startSponge: f.startSponge },
+          insertKind: 'timeBlocker',
+        });
+        setTimeConflictOpen(true);
+        return;
+      }
+      const result =
+        typeof insertBatchBreakWithReflow === 'function'
+          ? insertBatchBreakWithReflow(breakPayload)
+          : { success: false, error: 'Batch break insert is not available.' };
       if (result.success) {
         closeAddBatchModal();
       } else {
@@ -567,7 +699,12 @@ export default function SchedulingView() {
       : { hasConflict: false, affectedRowIds: [], snappedTo: null };
     if (preview?.hasConflict) {
       setPendingAddBatchPayload(payload);
-      setTimeConflictInfo({ affectedRowIds: preview.affectedRowIds || [], snappedTo: preview.snappedTo || null });
+      setTimeConflictInfo({
+        affectedRowIds: preview.affectedRowIds || [],
+        snappedTo: preview.snappedTo || null,
+        requestedInput: { date: (payload.date && String(payload.date).split('T')[0]) || '', startSponge: payload.startSponge },
+        insertKind: 'batch',
+      });
       setTimeConflictOpen(true);
       return;
     }
@@ -580,7 +717,7 @@ export default function SchedulingView() {
     } else {
       setAddBatchValidationError(result.error || 'Could not add batch.');
     }
-  }, [addBatchForm, addBatchTab, addBatchesFromModal, closeAddBatchModal, insertBatchBreakWithReflow, insertBatchesWithReflow, previewInsertBatchesWithReflow]);
+  }, [addBatchForm, addBatchTab, addBatchesFromModal, closeAddBatchModal, formatDateInput, insertBatchBreakWithReflow, insertBatchesWithReflow, previewInsertBatchBreakWithReflow, previewInsertBatchesWithReflow]);
 
   const handlePlanDateChange = (e) => {
     const v = e.target.value;
@@ -867,343 +1004,341 @@ export default function SchedulingView() {
         </div>
         <div className="overflow-x-auto min-w-0">
           <Tooltip.Provider delayDuration={300}>
-          <table className="w-full border-collapse text-xs sm:text-sm md:text-base lg:text-lg xl:text-xl 2xl:text-2xl min-w-[800px]">
-            <thead>
-              <tr className="bg-surface-card-warm border-b border-gray-200">
-                <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap">
-                  <span className="inline-flex items-center gap-2">
-                    Order
-                    <button
-                      type="button"
-                      onClick={() => setOrderHelpOpen(true)}
-                      className="inline-flex items-center justify-center w-5 h-5 rounded-full border border-gray-300 text-gray-600 hover:bg-gray-100"
-                      aria-label="Learn about swap order"
-                    >
-                      ?
+            <table className="w-full border-collapse text-xs sm:text-sm md:text-base lg:text-lg xl:text-xl 2xl:text-2xl min-w-[800px]">
+              <thead>
+                <tr className="bg-surface-card-warm border-b border-gray-200">
+                  <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap">
+                    <span className="inline-flex items-center gap-2">
+                      Order
+                      <button
+                        type="button"
+                        onClick={() => setOrderHelpOpen(true)}
+                        className="inline-flex items-center justify-center w-5 h-5 rounded-full border border-gray-300 text-gray-600 hover:bg-gray-100"
+                        aria-label="Learn about swap order"
+                      >
+                        ?
+                      </button>
+                    </span>
+                  </th>
+                  <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap w-10 sm:w-12">
+                    <span className="inline-flex items-center gap-2">
+                      Actions
+                      <button
+                        type="button"
+                        onClick={() => setDeleteAllConfirmOpen(true)}
+                        disabled={displayedRows.length <= 0}
+                        className="inline-flex items-center justify-center w-7 h-7 rounded-md border border-gray-300 text-gray-600 hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                        aria-label="Delete all displayed production orders"
+                        title="Delete all"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </span>
+                  </th>
+                  <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[4rem]">Line</th>
+                  <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[8rem]">
+                    <button type="button" onClick={() => handleSortClick('createdAt')} className="inline-flex items-center gap-1 hover:text-gray-900">
+                      Created <span className="text-gray-500">{sortIndicator('createdAt')}</span>
                     </button>
-                  </span>
-                </th>
-                <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap w-10 sm:w-12">
-                  <span className="inline-flex items-center gap-2">
-                    Actions
-                    <button
-                      type="button"
-                      onClick={() => setDeleteAllConfirmOpen(true)}
-                      disabled={displayedRows.length <= 0}
-                      className="inline-flex items-center justify-center w-7 h-7 rounded-md border border-gray-300 text-gray-600 hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
-                      aria-label="Delete all displayed production orders"
-                      title="Delete all"
-                    >
-                      <Trash2 className="w-4 h-4" />
+                  </th>
+                  <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[7rem]">SKU ID#</th>
+                  <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[6rem]">Product</th>
+                  {viewMode === 'schedule' ? (
+                    <>
+                      <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[3rem]">Order Batch</th>
+                      <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[6rem]">SKU Batch Order</th>
+                      <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[4rem]">Batch Qty</th>
+                    </>
+                  ) : (
+                    <>
+                      <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[4rem]">Sales Order</th>
+                      <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[5rem]">Total Qty</th>
+                      <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[4rem]">Batch Qty</th>
+                    </>
+                  )}
+                  <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[5rem]">
+                    <button type="button" onClick={() => handleSortClick('startSponge')} className="inline-flex items-center gap-1 hover:text-gray-900">
+                      Start Sponge <span className="text-gray-500">{sortIndicator('startSponge')}</span>
                     </button>
-                  </span>
-                </th>
-                <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[4rem]">Line</th>
-                <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[8rem]">
-                  <button type="button" onClick={() => handleSortClick('createdAt')} className="inline-flex items-center gap-1 hover:text-gray-900">
-                    Created <span className="text-gray-500">{sortIndicator('createdAt')}</span>
-                  </button>
-                </th>
-                <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[7rem]">SKU ID#</th>
-                <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[6rem]">Product</th>
-                {viewMode === 'schedule' ? (
-                  <>
-                    <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[3rem]">Order Batch</th>
-                    <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[6rem]">SKU Batch Order</th>
-                    <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[4rem]">Batch Qty</th>
-                  </>
-                ) : (
-                  <>
-                    <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[4rem]">Sales Order</th>
-                    <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[5rem]">Total Qty</th>
-                    <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[4rem]">Batch Qty</th>
-                  </>
-                )}
-                <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[5rem]">
-                  <button type="button" onClick={() => handleSortClick('startSponge')} className="inline-flex items-center gap-1 hover:text-gray-900">
-                    Start Sponge <span className="text-gray-500">{sortIndicator('startSponge')}</span>
-                  </button>
-                </th>
-                <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[5rem]">
-                  <button type="button" onClick={() => handleSortClick('endDough')} className="inline-flex items-center gap-1 hover:text-gray-900">
-                    End Dough <span className="text-gray-500">{sortIndicator('endDough')}</span>
-                  </button>
-                </th>
-                <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[5rem]">
-                  <button type="button" onClick={() => handleSortClick('endBatch')} className="inline-flex items-center gap-1 hover:text-gray-900">
-                    End Batch <span className="text-gray-500">{sortIndicator('endBatch')}</span>
-                  </button>
-                </th>
-                <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[5rem]">Process Time</th>
-                {viewMode === 'schedule' ? (
-                  <>
-                    <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[4rem]">Sales Order</th>
-                    <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[5rem]">Total Qty</th>
-                  </>
-                ) : (
-                  <>
-                    <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[3rem]">Order Batch</th>
-                    <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[6rem]">SKU Batch Order</th>
-                  </>
-                )}
-                <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[4rem]">Production Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {sortedDisplayedRows.map((row, index) => {
-                const isBreak = !!row.isBreak;
-                const displayProcTime = (() => {
-                  if (isBreak) {
-                    const bm = Number(row.breakMinutes);
-                    if (Number.isFinite(bm) && bm > 0) return bm;
-                    const pt = Number(row.procTime);
-                    if (Number.isFinite(pt) && pt > 0) return pt;
-                    const sm = parseTimeToMinutes(row.startSponge);
-                    const em = parseTimeToMinutes(row.endBatch);
-                    return em > sm ? em - sm : '';
-                  }
-                  return getTotalProcessMinutesForLine(row.product, row.productionLineId) || getTotalProcessMinutes(row.product) || row.procTime || '';
-                })();
-                const capacityDisplay = getCapacityForProduct(row.product, row.productionLineId) ?? row.capacity ?? '—';
-                const doughDisplay = getDoughWeightKgForProduct(row.product, row.productionLineId) != null ? `${getDoughWeightKgForProduct(row.product, row.productionLineId)} kg` : '—';
-                const totalDoughKg = getTotalDoughWeightKgForProduct(row.product, row.productionLineId);
-                const gramsPerUnit = getGramsPerUnitForProduct(row.product, row.productionLineId);
-                const totalGramsDisplay = totalDoughKg != null && !Number.isNaN(totalDoughKg) ? (totalDoughKg * 1000).toLocaleString('en-US', { maximumFractionDigits: 0 }) : '—';
-                const tooltipContent = (
-                  <div className="text-left text-xs sm:text-sm space-y-1 p-1 max-w-[280px]">
-                    <div><span className="font-medium text-gray-500">Total Quantity:</span> {row.soQty ?? '—'}</div>
-                    <div><span className="font-medium text-gray-500">Batch Qty (Quantity of the Batch):</span> {row.theorOutput ?? '—'}</div>
-                    <div><span className="font-medium text-gray-500">Sales Order:</span> {row.salesOrder ?? '—'}</div>
-                    <div><span className="font-medium text-gray-500">SO-CO Excess:</span> {displaySoCoExcessForTable(row)}</div>
-                    <div><span className="font-medium text-gray-500">Exchange Loss:</span> {row.exchangeForLoss ?? '—'}</div>
-                    <div><span className="font-medium text-gray-500">Excess:</span> {row.excess ?? '—'}</div>
-                    <div><span className="font-medium text-gray-500">Samples:</span> {row.samples ?? '—'}</div>
-                    <div><span className="font-medium text-gray-500">Carry Over:</span> {row.carryOverExcess ?? '—'}</div>
-                    <div><span className="font-medium text-gray-500">Theoretical Excess:</span> {row.theorExcess ?? '—'}</div>
-                    <div><span className="font-medium text-gray-500">Theoretical Output:</span> {row.theorOutput ?? '—'}</div>
-                    <div><span className="font-medium text-gray-500">Capacity:</span> {capacityDisplay}</div>
-                    <div><span className="font-medium text-gray-500">Dough (kg):</span> {doughDisplay}</div>
-                    <div><span className="font-medium text-gray-500">Total dough (kg):</span> {totalDoughKg != null ? `${totalDoughKg} kg` : '—'}</div>
-                    <div><span className="font-medium text-gray-500">Grams:</span> {gramsPerUnit != null ? gramsPerUnit : '—'}</div>
-                    <div><span className="font-medium text-gray-500">Total grams:</span> {totalGramsDisplay}</div>
-                  </div>
-                );
-                return (
-                  <Tooltip.Root
-                    key={row.id}
-                    delayDuration={300}
-                    open={hoveredRowId === row.id || clickedRowId === row.id}
-                  >
-                    <Tooltip.Trigger asChild>
-                  <tr
-                    className={`border-b border-gray-100 bg-surface-card hover:bg-gray-50/50 whitespace-nowrap ${
-                      clickedRowId === row.id ? 'bg-primary/20 ring-2 ring-primary/40 ring-inset' : ''
-                    } ${
-                      swapHighlightRowIds.includes(row.id) ? 'bg-primary/10 ring-2 ring-primary/30 ring-inset' : ''
-                    }`}
-                    onPointerEnter={(e) => {
-                      if (e?.target?.closest?.('[data-no-row-tooltip="true"]')) return;
-                      // hover different row -> drop the click-pinned tooltip state
-                      if (clickedRowId && clickedRowId !== row.id) {
-                        if (clickTimeoutRef.current) clearTimeout(clickTimeoutRef.current);
-                        setClickedRowId(null);
-                      }
-                      if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
-                      hoverTimeoutRef.current = setTimeout(() => setHoveredRowId(row.id), 300);
-                    }}
-                    onPointerLeave={() => {
-                      if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
-                      hoverTimeoutRef.current = null;
-                      setHoveredRowId(null);
-                    }}
-                    onClick={(e) => {
-                      if (e?.target?.closest?.('[data-exclude-row-click="true"]')) return;
-                      if (e.target.closest('button')) return;
-                      if (clickTimeoutRef.current) clearTimeout(clickTimeoutRef.current);
-                      setSwapHighlightRowIds([]);
-                      setClickedRowId(row.id);
-                      clickTimeoutRef.current = setTimeout(() => {
-                        setClickedRowId(null);
-                        if (document.activeElement && typeof document.activeElement.blur === 'function') document.activeElement.blur();
-                      }, 4000);
-                    }}
-                  >
-                    <td className="py-2 sm:py-2.5 px-2 sm:px-4" data-no-row-tooltip="true" data-exclude-row-click="true">
-                      <div className="flex gap-1">
-                        <Tooltip.Root>
-                          <Tooltip.Trigger asChild>
-                            <button
-                              type="button"
-                              onClick={() => handleMoveUp(row.id)}
-                              disabled={!getScheduleNeighbor(row.id, 'up')}
-                              className="p-1 rounded border border-gray-300 disabled:opacity-50 hover:bg-gray-100 text-inherit"
-                              aria-label="Move to previous schedule slot"
-                            >
-                              ↑
-                            </button>
-                          </Tooltip.Trigger>
-                          <Tooltip.Portal>
-                            <Tooltip.Content side="right" className="z-[80] rounded-md bg-gray-900 text-white px-2 py-1 text-xs shadow-lg max-w-[220px]">
-                              Move to the previous schedule slot. Times may reflow.
-                              <Tooltip.Arrow className="fill-gray-900" />
-                            </Tooltip.Content>
-                          </Tooltip.Portal>
-                        </Tooltip.Root>
-                        <Tooltip.Root>
-                          <Tooltip.Trigger asChild>
-                            <button
-                              type="button"
-                              onClick={() => handleMoveDown(row.id)}
-                              disabled={!getScheduleNeighbor(row.id, 'down')}
-                              className="p-1 rounded border border-gray-300 disabled:opacity-50 hover:bg-gray-100 text-inherit"
-                              aria-label="Move to next schedule slot"
-                            >
-                              ↓
-                            </button>
-                          </Tooltip.Trigger>
-                          <Tooltip.Portal>
-                            <Tooltip.Content side="right" className="z-[80] rounded-md bg-gray-900 text-white px-2 py-1 text-xs shadow-lg max-w-[220px]">
-                              Move to the next schedule slot. Times may reflow.
-                              <Tooltip.Arrow className="fill-gray-900" />
-                            </Tooltip.Content>
-                          </Tooltip.Portal>
-                        </Tooltip.Root>
-                      </div>
-                    </td>
-                    <td className="py-2 sm:py-2.5 px-2 sm:px-4" data-exclude-row-click="true">
-                      <div className="flex items-center gap-1">
-                        <button
-                          type="button"
-                          onClick={() => openEditModal(row)}
-                          className="p-1.5 rounded border border-gray-300 text-gray-700 hover:bg-gray-100 inline-flex items-center justify-center"
-                          aria-label="Edit row"
+                  </th>
+                  <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[5rem]">
+                    <button type="button" onClick={() => handleSortClick('endDough')} className="inline-flex items-center gap-1 hover:text-gray-900">
+                      End Dough <span className="text-gray-500">{sortIndicator('endDough')}</span>
+                    </button>
+                  </th>
+                  <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[5rem]">
+                    <button type="button" onClick={() => handleSortClick('endBatch')} className="inline-flex items-center gap-1 hover:text-gray-900">
+                      End Batch <span className="text-gray-500">{sortIndicator('endBatch')}</span>
+                    </button>
+                  </th>
+                  <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[5rem]">Process Time</th>
+                  {viewMode === 'schedule' ? (
+                    <>
+                      <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[4rem]">Sales Order</th>
+                      <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[5rem]">Total Qty</th>
+                    </>
+                  ) : (
+                    <>
+                      <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[3rem]">Order Batch</th>
+                      <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[6rem]">SKU Batch Order</th>
+                    </>
+                  )}
+                  <th className="text-left py-2 sm:py-3 px-2 sm:px-4 font-semibold text-gray-700 text-inherit whitespace-nowrap min-w-[4rem]">Production Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sortedDisplayedRows.map((row, index) => {
+                  const isBreak = !!row.isBreak;
+                  const displayProcTime = (() => {
+                    if (isBreak) {
+                      const bm = Number(row.breakMinutes);
+                      if (Number.isFinite(bm) && bm > 0) return bm;
+                      const pt = Number(row.procTime);
+                      if (Number.isFinite(pt) && pt > 0) return pt;
+                      const sm = parseTimeToMinutes(row.startSponge);
+                      const em = parseTimeToMinutes(row.endBatch);
+                      return em > sm ? em - sm : '';
+                    }
+                    return getTotalProcessMinutesForLine(row.product, row.productionLineId) || getTotalProcessMinutes(row.product) || row.procTime || '';
+                  })();
+                  const capacityDisplay = getCapacityForProduct(row.product, row.productionLineId) ?? row.capacity ?? '—';
+                  const doughDisplay = getDoughWeightKgForProduct(row.product, row.productionLineId) != null ? `${getDoughWeightKgForProduct(row.product, row.productionLineId)} kg` : '—';
+                  const totalDoughKg = getTotalDoughWeightKgForProduct(row.product, row.productionLineId);
+                  const gramsPerUnit = getGramsPerUnitForProduct(row.product, row.productionLineId);
+                  const totalGramsDisplay = totalDoughKg != null && !Number.isNaN(totalDoughKg) ? (totalDoughKg * 1000).toLocaleString('en-US', { maximumFractionDigits: 0 }) : '—';
+                  const tooltipContent = (
+                    <div className="text-left text-xs sm:text-sm space-y-1 p-1 max-w-[280px]">
+                      <div><span className="font-medium text-gray-500">Total Quantity:</span> {row.soQty ?? '—'}</div>
+                      <div><span className="font-medium text-gray-500">Batch Qty (Quantity of the Batch):</span> {row.theorOutput ?? '—'}</div>
+                      <div><span className="font-medium text-gray-500">Sales Order:</span> {row.salesOrder ?? '—'}</div>
+                      <div><span className="font-medium text-gray-500">SO-CO Excess:</span> {displaySoCoExcessForTable(row)}</div>
+                      <div><span className="font-medium text-gray-500">Exchange Loss:</span> {row.exchangeForLoss ?? '—'}</div>
+                      <div><span className="font-medium text-gray-500">Excess:</span> {row.excess ?? '—'}</div>
+                      <div><span className="font-medium text-gray-500">Samples:</span> {row.samples ?? '—'}</div>
+                      <div><span className="font-medium text-gray-500">Carry Over:</span> {row.carryOverExcess ?? '—'}</div>
+                      <div><span className="font-medium text-gray-500">Theoretical Excess:</span> {row.theorExcess ?? '—'}</div>
+                      <div><span className="font-medium text-gray-500">Theoretical Output:</span> {row.theorOutput ?? '—'}</div>
+                      <div><span className="font-medium text-gray-500">Capacity:</span> {capacityDisplay}</div>
+                      <div><span className="font-medium text-gray-500">Dough (kg):</span> {doughDisplay}</div>
+                      <div><span className="font-medium text-gray-500">Total dough (kg):</span> {totalDoughKg != null ? `${totalDoughKg} kg` : '—'}</div>
+                      <div><span className="font-medium text-gray-500">Grams:</span> {gramsPerUnit != null ? gramsPerUnit : '—'}</div>
+                      <div><span className="font-medium text-gray-500">Total grams:</span> {totalGramsDisplay}</div>
+                    </div>
+                  );
+                  return (
+                    <Tooltip.Root
+                      key={row.id}
+                      delayDuration={300}
+                      open={hoveredRowId === row.id || clickedRowId === row.id}
+                    >
+                      <Tooltip.Trigger asChild>
+                        <tr
+                          className={`border-b border-gray-100 bg-surface-card hover:bg-gray-50/50 whitespace-nowrap ${clickedRowId === row.id ? 'bg-primary/20 ring-2 ring-primary/40 ring-inset' : ''
+                            } ${swapHighlightRowIds.includes(row.id) ? 'bg-primary/10 ring-2 ring-primary/30 ring-inset' : ''
+                            }`}
+                          onPointerEnter={(e) => {
+                            if (e?.target?.closest?.('[data-no-row-tooltip="true"]')) return;
+                            // hover different row -> drop the click-pinned tooltip state
+                            if (clickedRowId && clickedRowId !== row.id) {
+                              if (clickTimeoutRef.current) clearTimeout(clickTimeoutRef.current);
+                              setClickedRowId(null);
+                            }
+                            if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
+                            hoverTimeoutRef.current = setTimeout(() => setHoveredRowId(row.id), 300);
+                          }}
+                          onPointerLeave={() => {
+                            if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
+                            hoverTimeoutRef.current = null;
+                            setHoveredRowId(null);
+                          }}
+                          onClick={(e) => {
+                            if (e?.target?.closest?.('[data-exclude-row-click="true"]')) return;
+                            if (e.target.closest('button')) return;
+                            if (clickTimeoutRef.current) clearTimeout(clickTimeoutRef.current);
+                            setSwapHighlightRowIds([]);
+                            setClickedRowId(row.id);
+                            clickTimeoutRef.current = setTimeout(() => {
+                              setClickedRowId(null);
+                              if (document.activeElement && typeof document.activeElement.blur === 'function') document.activeElement.blur();
+                            }, 4000);
+                          }}
                         >
-                          <Pencil className="w-4 h-4 sm:w-5 sm:h-5" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleDeleteClick(row)}
-                          className="p-1.5 rounded border border-gray-300 hover:bg-red-50 hover:border-red-300 text-gray-600 hover:text-red-700 transition-colors inline-flex items-center justify-center"
-                          aria-label="Delete row"
-                        >
-                          <Trash2 className="w-4 h-4 sm:w-5 sm:h-5" />
-                        </button>
-                      </div>
-                    </td>
-                    <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-700 text-inherit">{isBreak ? 'Time Blocker' : (getLineById(row.productionLineId)?.name ?? '—')}</td>
-                    <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-700 text-inherit whitespace-nowrap">
-                      <div className="leading-tight">
-                        <div>{(() => {
-                          const ms = getCreatedAtMs(row);
-                          if (!ms) return formatDateCreated(row.createdAt ?? '');
-                          const d = new Date(ms);
-                          if (Number.isNaN(d.getTime())) return formatDateCreated(row.createdAt ?? '');
-                          const y = d.getFullYear();
-                          const m = String(d.getMonth() + 1).padStart(2, '0');
-                          const day = String(d.getDate()).padStart(2, '0');
-                          return formatDateRelative(`${y}-${m}-${day}`);
-                        })()}</div>
-                        <div className="text-[0.65rem] sm:text-xs text-gray-500">
-                          {(() => {
-                            const ms = getCreatedAtMs(row);
-                            if (!ms) return '—';
-                            const d = new Date(ms);
-                            if (Number.isNaN(d.getTime())) return '—';
-                            const hhmm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-                            return formatTime12h(hhmm);
-                          })()}
-                        </div>
-                      </div>
-                    </td>
-                    <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-700 text-inherit tabular-nums whitespace-nowrap">{isBreak ? '—' : formatSkuIdFromMs(getCreatedAtMs(row))}</td>
-                    <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-800 text-inherit">{row.product ?? '—'}</td>
-                    {viewMode === 'schedule' ? (
-                      <>
-                        <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-700 text-inherit whitespace-nowrap">
-                          <div className="leading-tight">
-                            <div>{orderBatchMap[row.id] ?? '—'}</div>
-                            <div className="text-[0.65rem] sm:text-xs text-gray-500">{formatDateRelative(row.date)}</div>
-                          </div>
-                        </td>
-                        <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-700 text-inherit whitespace-nowrap tabular-nums">{isBreak ? '—' : (skuBatchOrderMap[row.id] ?? '—')}</td>
-                        <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-800 text-inherit">{isBreak ? '—' : (row.theorOutput ?? '—')}</td>
-                      </>
-                    ) : (
-                      <>
-                        <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-800 text-inherit">{isBreak ? '—' : (row.salesOrder ?? '—')}</td>
-                        <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-800 text-inherit">{isBreak ? '—' : (row.soQty ?? '—')}</td>
-                        <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-800 text-inherit">{isBreak ? '—' : (row.theorOutput ?? '—')}</td>
-                      </>
-                    )}
-                    <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-700 text-inherit">
-                      <div className="leading-tight">
-                        <div>{formatTime12h(row.startSponge)}</div>
-                        <div className="text-[0.65rem] sm:text-xs text-gray-500">{formatDateRelative(row.date)}</div>
-                      </div>
-                    </td>
-                    <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-700 text-inherit">
-                      {isBreak ? '—' : (
-                        <div className="leading-tight">
-                          <div>{formatTime12h(row.endDough)}</div>
-                          <div className="text-[0.65rem] sm:text-xs text-gray-500">
-                            {formatDateRelative(getEndDateStr(row.date, row.startSponge, row.endDough))}
-                          </div>
-                        </div>
-                      )}
-                    </td>
-                    <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-700 text-inherit">
-                      <div className="leading-tight">
-                        <div>{formatTime12h(row.endBatch)}</div>
-                        <div className="text-[0.65rem] sm:text-xs text-gray-500">
-                          {formatDateRelative(getEndDateStr(row.date, row.startSponge, row.endBatch))}
-                        </div>
-                      </div>
-                    </td>
-                    <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-700 text-inherit whitespace-nowrap tabular-nums">{formatMinutesAsHours(displayProcTime)}</td>
-                    {viewMode === 'schedule' ? (
-                      <>
-                        <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-800 text-inherit">{isBreak ? '—' : (row.salesOrder ?? '—')}</td>
-                        <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-800 text-inherit">{isBreak ? '—' : (row.soQty ?? '—')}</td>
-                      </>
-                    ) : (
-                      <>
-                        <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-700 text-inherit whitespace-nowrap">
-                          <div className="leading-tight">
-                            <div>{orderBatchMap[row.id] ?? '—'}</div>
-                            <div className="text-[0.65rem] sm:text-xs text-gray-500">{formatDateRelative(row.date)}</div>
-                          </div>
-                        </td>
-                        <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-700 text-inherit whitespace-nowrap tabular-nums">{isBreak ? '—' : (skuBatchOrderMap[row.id] ?? '—')}</td>
-                      </>
-                    )}
-                    <td className="py-2 sm:py-2.5 px-2 sm:px-4">
-                      {(() => {
-                        const status = getProductionStatus(row, statusTick);
-                        const statusClass =
-                          status === 'In Progress'
-                            ? 'bg-amber-100 text-amber-800 border-amber-200'
-                            : status === 'Finished'
-                              ? 'bg-green-100 text-green-800 border-green-200'
-                              : 'bg-gray-100 text-gray-700 border-gray-200';
-                        return (
-                          <span className={`inline-block px-2 py-0.5 rounded border text-xs font-medium ${statusClass}`}>
-                            {status}
-                          </span>
-                        );
-                      })()}
-                    </td>
-                  </tr>
-                    </Tooltip.Trigger>
-                    <Tooltip.Portal>
-                      <Tooltip.Content side="top" sideOffset={6} className="z-50 max-w-[90vw] rounded-lg border border-gray-200 bg-white px-3 py-2 shadow-lg text-gray-900">
-                        {tooltipContent}
-                      </Tooltip.Content>
-                    </Tooltip.Portal>
-                  </Tooltip.Root>
-                );
-              })}
-            </tbody>
-          </table>
+                          <td className="py-2 sm:py-2.5 px-2 sm:px-4" data-no-row-tooltip="true" data-exclude-row-click="true">
+                            <div className="flex gap-1">
+                              <Tooltip.Root>
+                                <Tooltip.Trigger asChild>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleMoveUp(row.id)}
+                                    disabled={!getScheduleNeighbor(row.id, 'up')}
+                                    className="p-1 rounded border border-gray-300 disabled:opacity-50 hover:bg-gray-100 text-inherit"
+                                    aria-label="Move to previous schedule slot"
+                                  >
+                                    ↑
+                                  </button>
+                                </Tooltip.Trigger>
+                                <Tooltip.Portal>
+                                  <Tooltip.Content side="right" className="z-[80] rounded-md bg-gray-900 text-white px-2 py-1 text-xs shadow-lg max-w-[220px]">
+                                    Move to the previous schedule slot. Times may reflow.
+                                    <Tooltip.Arrow className="fill-gray-900" />
+                                  </Tooltip.Content>
+                                </Tooltip.Portal>
+                              </Tooltip.Root>
+                              <Tooltip.Root>
+                                <Tooltip.Trigger asChild>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleMoveDown(row.id)}
+                                    disabled={!getScheduleNeighbor(row.id, 'down')}
+                                    className="p-1 rounded border border-gray-300 disabled:opacity-50 hover:bg-gray-100 text-inherit"
+                                    aria-label="Move to next schedule slot"
+                                  >
+                                    ↓
+                                  </button>
+                                </Tooltip.Trigger>
+                                <Tooltip.Portal>
+                                  <Tooltip.Content side="right" className="z-[80] rounded-md bg-gray-900 text-white px-2 py-1 text-xs shadow-lg max-w-[220px]">
+                                    Move to the next schedule slot. Times may reflow.
+                                    <Tooltip.Arrow className="fill-gray-900" />
+                                  </Tooltip.Content>
+                                </Tooltip.Portal>
+                              </Tooltip.Root>
+                            </div>
+                          </td>
+                          <td className="py-2 sm:py-2.5 px-2 sm:px-4" data-exclude-row-click="true">
+                            <div className="flex items-center gap-1">
+                              <button
+                                type="button"
+                                onClick={() => openEditModal(row)}
+                                className="p-1.5 rounded border border-gray-300 text-gray-700 hover:bg-gray-100 inline-flex items-center justify-center"
+                                aria-label="Edit row"
+                              >
+                                <Pencil className="w-4 h-4 sm:w-5 sm:h-5" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteClick(row)}
+                                className="p-1.5 rounded border border-gray-300 hover:bg-red-50 hover:border-red-300 text-gray-600 hover:text-red-700 transition-colors inline-flex items-center justify-center"
+                                aria-label="Delete row"
+                              >
+                                <Trash2 className="w-4 h-4 sm:w-5 sm:h-5" />
+                              </button>
+                            </div>
+                          </td>
+                          <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-700 text-inherit">{isBreak ? 'Time Blocker' : (getLineById(row.productionLineId)?.name ?? '—')}</td>
+                          <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-700 text-inherit whitespace-nowrap">
+                            <div className="leading-tight">
+                              <div>{(() => {
+                                const ms = getCreatedAtMs(row);
+                                if (!ms) return formatDateCreated(row.createdAt ?? '');
+                                const d = new Date(ms);
+                                if (Number.isNaN(d.getTime())) return formatDateCreated(row.createdAt ?? '');
+                                const y = d.getFullYear();
+                                const m = String(d.getMonth() + 1).padStart(2, '0');
+                                const day = String(d.getDate()).padStart(2, '0');
+                                return formatDateRelative(`${y}-${m}-${day}`);
+                              })()}</div>
+                              <div className="text-[0.65rem] sm:text-xs text-gray-500">
+                                {(() => {
+                                  const ms = getCreatedAtMs(row);
+                                  if (!ms) return '—';
+                                  const d = new Date(ms);
+                                  if (Number.isNaN(d.getTime())) return '—';
+                                  const hhmm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+                                  return formatTime12h(hhmm);
+                                })()}
+                              </div>
+                            </div>
+                          </td>
+                          <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-700 text-inherit tabular-nums whitespace-nowrap">{isBreak ? '—' : formatSkuIdFromMs(getCreatedAtMs(row))}</td>
+                          <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-800 text-inherit">{row.product ?? '—'}</td>
+                          {viewMode === 'schedule' ? (
+                            <>
+                              <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-700 text-inherit whitespace-nowrap">
+                                <div className="leading-tight">
+                                  <div>{orderBatchMap[row.id] ?? '—'}</div>
+                                  <div className="text-[0.65rem] sm:text-xs text-gray-500">{formatDateRelative(row.date)}</div>
+                                </div>
+                              </td>
+                              <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-700 text-inherit whitespace-nowrap tabular-nums">{isBreak ? '—' : (skuBatchOrderMap[row.id] ?? '—')}</td>
+                              <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-800 text-inherit">{isBreak ? '—' : (row.theorOutput ?? '—')}</td>
+                            </>
+                          ) : (
+                            <>
+                              <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-800 text-inherit">{isBreak ? '—' : (row.salesOrder ?? '—')}</td>
+                              <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-800 text-inherit">{isBreak ? '—' : (row.soQty ?? '—')}</td>
+                              <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-800 text-inherit">{isBreak ? '—' : (row.theorOutput ?? '—')}</td>
+                            </>
+                          )}
+                          <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-700 text-inherit">
+                            <div className="leading-tight">
+                              <div>{formatTime12h(row.startSponge)}</div>
+                              <div className="text-[0.65rem] sm:text-xs text-gray-500">{formatDateRelative(row.date)}</div>
+                            </div>
+                          </td>
+                          <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-700 text-inherit">
+                            {isBreak ? '—' : (
+                              <div className="leading-tight">
+                                <div>{formatTime12h(row.endDough)}</div>
+                                <div className="text-[0.65rem] sm:text-xs text-gray-500">
+                                  {formatDateRelative(getEndDateStr(row.date, row.startSponge, row.endDough))}
+                                </div>
+                              </div>
+                            )}
+                          </td>
+                          <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-700 text-inherit">
+                            <div className="leading-tight">
+                              <div>{formatTime12h(row.endBatch)}</div>
+                              <div className="text-[0.65rem] sm:text-xs text-gray-500">
+                                {formatDateRelative(getEndDateStr(row.date, row.startSponge, row.endBatch))}
+                              </div>
+                            </div>
+                          </td>
+                          <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-700 text-inherit whitespace-nowrap tabular-nums">{formatMinutesAsHours(displayProcTime)}</td>
+                          {viewMode === 'schedule' ? (
+                            <>
+                              <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-800 text-inherit">{isBreak ? '—' : (row.salesOrder ?? '—')}</td>
+                              <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-800 text-inherit">{isBreak ? '—' : (row.soQty ?? '—')}</td>
+                            </>
+                          ) : (
+                            <>
+                              <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-700 text-inherit whitespace-nowrap">
+                                <div className="leading-tight">
+                                  <div>{orderBatchMap[row.id] ?? '—'}</div>
+                                  <div className="text-[0.65rem] sm:text-xs text-gray-500">{formatDateRelative(row.date)}</div>
+                                </div>
+                              </td>
+                              <td className="py-2 sm:py-2.5 px-2 sm:px-4 text-gray-700 text-inherit whitespace-nowrap tabular-nums">{isBreak ? '—' : (skuBatchOrderMap[row.id] ?? '—')}</td>
+                            </>
+                          )}
+                          <td className="py-2 sm:py-2.5 px-2 sm:px-4">
+                            {(() => {
+                              const status = getProductionStatus(row, statusTick);
+                              const statusClass =
+                                status === 'In Progress'
+                                  ? 'bg-amber-100 text-amber-800 border-amber-200'
+                                  : status === 'Finished'
+                                    ? 'bg-green-100 text-green-800 border-green-200'
+                                    : 'bg-gray-100 text-gray-700 border-gray-200';
+                              return (
+                                <span className={`inline-block px-2 py-0.5 rounded border text-xs font-medium ${statusClass}`}>
+                                  {status}
+                                </span>
+                              );
+                            })()}
+                          </td>
+                        </tr>
+                      </Tooltip.Trigger>
+                      <Tooltip.Portal>
+                        <Tooltip.Content side="top" sideOffset={6} className="z-50 max-w-[90vw] rounded-lg border border-gray-200 bg-white px-3 py-2 shadow-lg text-gray-900">
+                          {tooltipContent}
+                        </Tooltip.Content>
+                      </Tooltip.Portal>
+                    </Tooltip.Root>
+                  );
+                })}
+              </tbody>
+            </table>
           </Tooltip.Provider>
         </div>
         <p className="p-2 sm:p-3 text-xs sm:text-sm 2xl:text-base text-muted bg-surface-card-warm border-t border-gray-200">
@@ -1259,104 +1394,104 @@ export default function SchedulingView() {
                       </>
                     ) : (
                       <>
-                    <div>
-                      <label className="block text-xs font-medium text-gray-600 mb-0.5">Line</label>
-                      <select value={r.productionLineId ?? ''} onChange={(e) => updateDraft('productionLineId', e.target.value)} className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900">
-                        {lines.map((line) => <option key={line.id} value={line.id}>{line.name}</option>)}
-                      </select>
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-gray-600 mb-0.5">Date</label>
-                      <input type="date" value={r.date ?? ''} onChange={(e) => updateDraft('date', e.target.value)} className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900" />
-                    </div>
-                    <div className="sm:col-span-2">
-                      <label className="block text-xs font-medium text-gray-600 mb-0.5">Product</label>
-                      <select value={r.product ?? ''} onChange={(e) => updateDraft('product', e.target.value)} className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900">
-                        <option value="">— Select product —</option>
-                        {editRecipeOptions.map((rec) => <option key={rec.id} value={rec.name}>{rec.name}</option>)}
-                      </select>
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-gray-600 mb-0.5">Total Quantity</label>
-                      <input type="number" value={r.soQty ?? ''} onChange={(e) => updateDraft('soQty', Number(e.target.value) || 0)} className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900" />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-gray-600 mb-0.5">Sales Order (base qty)</label>
-                      <input type="number" value={r.salesOrder ?? ''} onChange={(e) => updateDraft('salesOrder', e.target.value === '' ? '' : Number(e.target.value))} className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900" placeholder="e.g. 1090" />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-gray-600 mb-0.5">SO-CO Excess</label>
-                      <div className="w-full border border-gray-200 rounded px-2 py-1.5 bg-gray-50 text-gray-700">
-                        {soCoExcessForPersistedRow(r)}
-                      </div>
-                      <p className="text-xs text-gray-500 mt-0.5">
-                        Read-only: if Sales Order is set → Sales Order − Carry Over; otherwise the stored value for this
-                        batch (e.g. 0 on the first row of a Total-Qty split, batch size on later rows). Matches Dashboard.
-                      </p>
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-gray-600 mb-0.5">Exchange Loss</label>
-                      <input type="number" value={r.exchangeForLoss ?? ''} onChange={(e) => updateDraft('exchangeForLoss', Number(e.target.value) || 0)} className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900" />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-gray-600 mb-0.5">Excess</label>
-                      <input type="number" value={r.excess ?? ''} onChange={(e) => updateDraft('excess', Number(e.target.value) || 0)} className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900" />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-gray-600 mb-0.5">Samples</label>
-                      <input type="number" value={r.samples ?? ''} onChange={(e) => updateDraft('samples', Number(e.target.value) || 0)} className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900" />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-gray-600 mb-0.5">Carry Over</label>
-                      <input type="number" value={r.carryOverExcess ?? ''} onChange={(e) => updateDraft('carryOverExcess', Number(e.target.value) || 0)} className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900" />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-gray-600 mb-0.5">Theoretical Excess</label>
-                      <input type="number" value={r.theorExcess ?? ''} onChange={(e) => updateDraft('theorExcess', Number(e.target.value) || 0)} className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900" />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-gray-600 mb-0.5">Theoretical Output (override)</label>
-                      <input type="number" value={r.theorOutputOverride !== undefined && r.theorOutputOverride !== '' ? r.theorOutputOverride : computeTheoreticalOutput(r)} onChange={(e) => updateDraft('theorOutputOverride', e.target.value === '' ? '' : e.target.value)} className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900" placeholder="Computed" />
-                      <span className="text-xs text-gray-500">Computed: {computeTheoreticalOutput(r)}</span>
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-gray-600 mb-0.5">Capacity</label>
-                      <div className="w-full border border-gray-200 rounded px-2 py-1.5 bg-gray-50 text-gray-700">{capacityVal}</div>
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-gray-600 mb-0.5">Dough (kg)</label>
-                      <div className="w-full border border-gray-200 rounded px-2 py-1.5 bg-gray-50 text-gray-700">{doughVal}</div>
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-gray-600 mb-0.5">Process Time</label>
-                      <div className="w-full border border-gray-200 rounded px-2 py-1.5 bg-gray-50 text-gray-700">{procTimeVal}</div>
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-gray-600 mb-0.5">Start Sponge</label>
-                      <input type="text" value={r.startSponge ?? ''} onChange={(e) => updateDraft('startSponge', e.target.value)} placeholder="HH:MM" className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900" />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-gray-600 mb-0.5">End Dough</label>
-                      <div className="w-full border border-gray-200 rounded px-2 py-1.5 bg-gray-50 text-gray-700">{r.endDough ?? '—'}</div>
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-gray-600 mb-0.5">End Batch</label>
-                      <div className="w-full border border-gray-200 rounded px-2 py-1.5 bg-gray-50 text-gray-700">{r.endBatch ?? '—'}</div>
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-gray-600 mb-0.5">Order Batch</label>
-                      <div className="w-full border border-gray-200 rounded px-2 py-1.5 bg-gray-50 text-gray-700">{orderBatchMap[r.id] ?? '—'}</div>
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-gray-600 mb-0.5">Line Batch</label>
-                      <div className="w-full border border-gray-200 rounded px-2 py-1.5 bg-gray-50 text-gray-700">{lineBatchMap[r.id] ?? '—'}</div>
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-gray-600 mb-0.5">Production Status</label>
-                      <div className="w-full border border-gray-200 rounded px-2 py-1.5 bg-gray-50 text-gray-700">
-                        {getProductionStatus(r, statusTick)}
-                      </div>
-                    </div>
+                        <div>
+                          <label className="block text-xs font-medium text-gray-600 mb-0.5">Line</label>
+                          <select value={r.productionLineId ?? ''} onChange={(e) => updateDraft('productionLineId', e.target.value)} className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900">
+                            {lines.map((line) => <option key={line.id} value={line.id}>{line.name}</option>)}
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-xs font-medium text-gray-600 mb-0.5">Date</label>
+                          <input type="date" value={r.date ?? ''} onChange={(e) => updateDraft('date', e.target.value)} className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900" />
+                        </div>
+                        <div className="sm:col-span-2">
+                          <label className="block text-xs font-medium text-gray-600 mb-0.5">Product</label>
+                          <select value={r.product ?? ''} onChange={(e) => updateDraft('product', e.target.value)} className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900">
+                            <option value="">— Select product —</option>
+                            {editRecipeOptions.map((rec) => <option key={rec.id} value={rec.name}>{rec.name}</option>)}
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-xs font-medium text-gray-600 mb-0.5">Total Quantity</label>
+                          <input type="number" value={r.soQty ?? ''} onChange={(e) => updateDraft('soQty', Number(e.target.value) || 0)} className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900" />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-medium text-gray-600 mb-0.5">Sales Order (base qty)</label>
+                          <input type="number" value={r.salesOrder ?? ''} onChange={(e) => updateDraft('salesOrder', e.target.value === '' ? '' : Number(e.target.value))} className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900" placeholder="e.g. 1090" />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-medium text-gray-600 mb-0.5">SO-CO Excess</label>
+                          <div className="w-full border border-gray-200 rounded px-2 py-1.5 bg-gray-50 text-gray-700">
+                            {soCoExcessForPersistedRow(r)}
+                          </div>
+                          <p className="text-xs text-gray-500 mt-0.5">
+                            Read-only: if Sales Order is set → Sales Order − Carry Over; otherwise the stored value for this
+                            batch (e.g. 0 on the first row of a Total-Qty split, batch size on later rows). Matches Dashboard.
+                          </p>
+                        </div>
+                        <div>
+                          <label className="block text-xs font-medium text-gray-600 mb-0.5">Exchange Loss</label>
+                          <input type="number" value={r.exchangeForLoss ?? ''} onChange={(e) => updateDraft('exchangeForLoss', Number(e.target.value) || 0)} className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900" />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-medium text-gray-600 mb-0.5">Excess</label>
+                          <input type="number" value={r.excess ?? ''} onChange={(e) => updateDraft('excess', Number(e.target.value) || 0)} className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900" />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-medium text-gray-600 mb-0.5">Samples</label>
+                          <input type="number" value={r.samples ?? ''} onChange={(e) => updateDraft('samples', Number(e.target.value) || 0)} className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900" />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-medium text-gray-600 mb-0.5">Carry Over</label>
+                          <input type="number" value={r.carryOverExcess ?? ''} onChange={(e) => updateDraft('carryOverExcess', Number(e.target.value) || 0)} className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900" />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-medium text-gray-600 mb-0.5">Theoretical Excess</label>
+                          <input type="number" value={r.theorExcess ?? ''} onChange={(e) => updateDraft('theorExcess', Number(e.target.value) || 0)} className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900" />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-medium text-gray-600 mb-0.5">Theoretical Output (override)</label>
+                          <input type="number" value={r.theorOutputOverride !== undefined && r.theorOutputOverride !== '' ? r.theorOutputOverride : computeTheoreticalOutput(r)} onChange={(e) => updateDraft('theorOutputOverride', e.target.value === '' ? '' : e.target.value)} className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900" placeholder="Computed" />
+                          <span className="text-xs text-gray-500">Computed: {computeTheoreticalOutput(r)}</span>
+                        </div>
+                        <div>
+                          <label className="block text-xs font-medium text-gray-600 mb-0.5">Capacity</label>
+                          <div className="w-full border border-gray-200 rounded px-2 py-1.5 bg-gray-50 text-gray-700">{capacityVal}</div>
+                        </div>
+                        <div>
+                          <label className="block text-xs font-medium text-gray-600 mb-0.5">Dough (kg)</label>
+                          <div className="w-full border border-gray-200 rounded px-2 py-1.5 bg-gray-50 text-gray-700">{doughVal}</div>
+                        </div>
+                        <div>
+                          <label className="block text-xs font-medium text-gray-600 mb-0.5">Process Time</label>
+                          <div className="w-full border border-gray-200 rounded px-2 py-1.5 bg-gray-50 text-gray-700">{procTimeVal}</div>
+                        </div>
+                        <div>
+                          <label className="block text-xs font-medium text-gray-600 mb-0.5">Start Sponge</label>
+                          <input type="text" value={r.startSponge ?? ''} onChange={(e) => updateDraft('startSponge', e.target.value)} placeholder="HH:MM" className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900" />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-medium text-gray-600 mb-0.5">End Dough</label>
+                          <div className="w-full border border-gray-200 rounded px-2 py-1.5 bg-gray-50 text-gray-700">{r.endDough ?? '—'}</div>
+                        </div>
+                        <div>
+                          <label className="block text-xs font-medium text-gray-600 mb-0.5">End Batch</label>
+                          <div className="w-full border border-gray-200 rounded px-2 py-1.5 bg-gray-50 text-gray-700">{r.endBatch ?? '—'}</div>
+                        </div>
+                        <div>
+                          <label className="block text-xs font-medium text-gray-600 mb-0.5">Order Batch</label>
+                          <div className="w-full border border-gray-200 rounded px-2 py-1.5 bg-gray-50 text-gray-700">{orderBatchMap[r.id] ?? '—'}</div>
+                        </div>
+                        <div>
+                          <label className="block text-xs font-medium text-gray-600 mb-0.5">Line Batch</label>
+                          <div className="w-full border border-gray-200 rounded px-2 py-1.5 bg-gray-50 text-gray-700">{lineBatchMap[r.id] ?? '—'}</div>
+                        </div>
+                        <div>
+                          <label className="block text-xs font-medium text-gray-600 mb-0.5">Production Status</label>
+                          <div className="w-full border border-gray-200 rounded px-2 py-1.5 bg-gray-50 text-gray-700">
+                            {getProductionStatus(r, statusTick)}
+                          </div>
+                        </div>
                       </>
                     )}
                   </>
@@ -1408,323 +1543,341 @@ export default function SchedulingView() {
               </Dialog.Description> */}
             </div>
             <div className="p-4 overflow-y-auto flex-1 text-sm">
-              {addBatchValidationError && (
-                <div className="p-2 rounded bg-red-50 border border-red-200 text-red-800 text-xs mb-3">
-                  {addBatchValidationError}
+              <Tooltip.Provider delayDuration={300}>
+                {addBatchValidationError && (
+                  <div className="p-2 rounded bg-red-50 border border-red-200 text-red-800 text-xs mb-3">
+                    {addBatchValidationError}
+                  </div>
+                )}
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 mb-0.5">Schedule start date</label>
+                    <input
+                      type="date"
+                      value={addBatchForm.date}
+                      onChange={(e) => setAddBatchForm((p) => ({ ...p, date: e.target.value }))}
+                      onFocus={() => setAddBatchValidationError('')}
+                      className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900"
+                    />
+                  </div>
                 </div>
-              )}
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-medium text-gray-600 mb-0.5">Schedule start date</label>
-                  <input
-                    type="date"
-                    value={addBatchForm.date}
-                    onChange={(e) => setAddBatchForm((p) => ({ ...p, date: e.target.value }))}
-                    onFocus={() => setAddBatchValidationError('')}
-                    className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900"
-                  />
-                </div>
-              </div>
+                <div className="mt-4">
+                  <Tabs.Root value={addBatchTab} onValueChange={setAddBatchTab} className="w-full">
+                    <Tabs.List className="flex gap-1 border-b border-gray-200 bg-surface-card-warm rounded-t-card overflow-x-auto pt-2 px-2">
+                      <Tabs.Trigger value="quantity" className="px-3 py-2 rounded-t-md text-xs sm:text-sm font-medium text-gray-700 data-[state=active]:bg-white data-[state=active]:border data-[state=active]:border-gray-200 data-[state=active]:border-b-0">
+                        Quantity
+                      </Tabs.Trigger>
+                      <Tabs.Trigger value="sales" className="px-3 py-2 rounded-t-md text-xs sm:text-sm font-medium text-gray-700 data-[state=active]:bg-white data-[state=active]:border data-[state=active]:border-gray-200 data-[state=active]:border-b-0">
+                        Sales Order
+                      </Tabs.Trigger>
+                      <Tabs.Trigger value="others" className="px-3 py-2 rounded-t-md text-xs sm:text-sm font-medium text-gray-700 data-[state=active]:bg-white data-[state=active]:border data-[state=active]:border-gray-200 data-[state=active]:border-b-0">
+                        By Others
+                      </Tabs.Trigger>
+                    </Tabs.List>
 
-              <div className="mt-4">
-                <Tabs.Root value={addBatchTab} onValueChange={setAddBatchTab} className="w-full">
-                  <Tabs.List className="flex gap-1 border-b border-gray-200 bg-surface-card-warm rounded-t-card overflow-x-auto pt-2 px-2">
-                    <Tabs.Trigger value="quantity" className="px-3 py-2 rounded-t-md text-xs sm:text-sm font-medium text-gray-700 data-[state=active]:bg-white data-[state=active]:border data-[state=active]:border-gray-200 data-[state=active]:border-b-0">
-                      Quantity
-                    </Tabs.Trigger>
-                    <Tabs.Trigger value="sales" className="px-3 py-2 rounded-t-md text-xs sm:text-sm font-medium text-gray-700 data-[state=active]:bg-white data-[state=active]:border data-[state=active]:border-gray-200 data-[state=active]:border-b-0">
-                      Sales Order
-                    </Tabs.Trigger>
-                    <Tabs.Trigger value="others" className="px-3 py-2 rounded-t-md text-xs sm:text-sm font-medium text-gray-700 data-[state=active]:bg-white data-[state=active]:border data-[state=active]:border-gray-200 data-[state=active]:border-b-0">
-                      By Others
-                    </Tabs.Trigger>
-                  </Tabs.List>
+                    <Tabs.Content value="quantity" className="border border-gray-200 border-t-0 rounded-b-card p-3">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div>
+                          <label className="block text-xs font-medium text-gray-600 mb-0.5">Start Sponge (time)</label>
+                          <input
+                            type="time"
+                            value={addBatchForm.startSponge}
+                            onChange={(e) => setAddBatchForm((p) => ({ ...p, startSponge: e.target.value || '00:00' }))}
+                            onFocus={() => setAddBatchValidationError('')}
+                            className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-medium text-gray-600 mb-0.5">Production line</label>
+                          <select
+                            value={addBatchForm.productionLineId}
+                            onChange={(e) => setAddBatchForm((p) => ({ ...p, productionLineId: e.target.value, product: '' }))}
+                            className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900"
+                          >
+                            {lines.map((line) => (
+                              <option key={line.id} value={line.id}>{line.name}</option>
+                            ))}
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-xs font-medium text-gray-600 mb-0.5">Product</label>
+                          <select
+                            value={addBatchForm.product}
+                            onChange={(e) => setAddBatchForm((p) => ({ ...p, product: e.target.value }))}
+                            className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900"
+                          >
+                            <option value="">— Select product —</option>
+                            {(addBatchForm.productionLineId ? getRecipesForLine(addBatchForm.productionLineId) : recipeOptions).map((r) => (
+                              <option key={r.id} value={r.name}>{r.name}</option>
+                            ))}
+                          </select>
+                        </div>
 
-                  <Tabs.Content value="quantity" className="border border-gray-200 border-t-0 rounded-b-card p-3">
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      <div>
-                        <label className="block text-xs font-medium text-gray-600 mb-0.5">Start Sponge (time)</label>
-                        <input
-                          type="time"
-                          value={addBatchForm.startSponge}
-                          onChange={(e) => setAddBatchForm((p) => ({ ...p, startSponge: e.target.value || '00:00' }))}
-                          onFocus={() => setAddBatchValidationError('')}
-                          className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-xs font-medium text-gray-600 mb-0.5">Production line</label>
-                        <select
-                          value={addBatchForm.productionLineId}
-                          onChange={(e) => setAddBatchForm((p) => ({ ...p, productionLineId: e.target.value, product: '' }))}
-                          className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900"
-                        >
-                          {lines.map((line) => (
-                            <option key={line.id} value={line.id}>{line.name}</option>
-                          ))}
-                        </select>
-                      </div>
-                      <div>
-                        <label className="block text-xs font-medium text-gray-600 mb-0.5">Product</label>
-                        <select
-                          value={addBatchForm.product}
-                          onChange={(e) => setAddBatchForm((p) => ({ ...p, product: e.target.value }))}
-                          className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900"
-                        >
-                          <option value="">— Select product —</option>
-                          {(addBatchForm.productionLineId ? getRecipesForLine(addBatchForm.productionLineId) : recipeOptions).map((r) => (
-                            <option key={r.id} value={r.name}>{r.name}</option>
-                          ))}
-                        </select>
-                      </div>
+                        {(() => {
+                          const split = computeModalBatchSplit(addBatchForm, getYieldForProduct, getCapacityForProduct);
+                          const { numBatches, batchQuantities, yieldPer, capacity } = split;
+                          const selectedBatchIndex =
+                            numBatches != null && numBatches > 0
+                              ? Math.min(addBatchSelectedBatchIndex, numBatches - 1)
+                              : 0;
+                          const quantityOfBatch = batchQuantities[selectedBatchIndex] ?? '—';
+                          return (
+                            <>
 
-                      {(() => {
-                        const yieldForProduct = addBatchForm.product && addBatchForm.productionLineId
-                          ? getYieldForProduct(addBatchForm.product, addBatchForm.productionLineId)
-                          : null;
-                        const totalQty = Number(addBatchForm.soQty) || 0;
-                        const numBatches = yieldForProduct != null && yieldForProduct > 0 && totalQty > 0
-                          ? Math.ceil(totalQty / yieldForProduct)
-                          : null;
-                        const batchQuantities = numBatches != null && numBatches > 0 && yieldForProduct != null
-                          ? (() => {
-                              const arr = [];
-                              let rem = totalQty;
-                              for (let i = 0; i < numBatches; i++) {
-                                const pc = i < numBatches - 1 ? yieldForProduct : Math.min(yieldForProduct, rem);
-                                arr.push(pc);
-                                rem -= pc;
-                              }
-                              return arr;
-                            })()
-                          : [];
-                        const selectedBatchIndex = numBatches != null && numBatches > 0
-                          ? Math.min(addBatchSelectedBatchIndex, numBatches - 1)
-                          : 0;
-                        const quantityOfBatch = batchQuantities[selectedBatchIndex] ?? '—';
-                        const batchOrdinal = (n) => {
-                          const s = ['th', 'st', 'nd', 'rd'];
-                          const v = n % 100;
-                          return n + (s[(v - 20) % 10] || s[v] || s[0]);
-                        };
-                        return (
-                          <>
-                            <div>
-                              <label className="block text-xs font-medium text-gray-600 mb-0.5">Total Quantity</label>
-                              <input
-                                type="number"
-                                min={0}
-                                value={addBatchForm.soQty}
-                                onChange={(e) => setAddBatchForm((p) => ({ ...p, soQty: e.target.value === '' ? '' : Number(e.target.value) }))}
-                                className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900"
-                              />
-                            </div>
-                            <div>
-                              <label className="block text-xs font-medium text-gray-600 mb-0.5">Theoretical Yield / Batch</label>
-                              <div className="w-full border border-gray-200 rounded px-2 py-1.5 bg-gray-100 text-gray-800">
-                                {yieldForProduct != null ? yieldForProduct : '—'}
+                              <div>
+                                <AddScheduleYieldLabelWithCapacityTooltip capacity={capacity} />
+                                <div className="w-full border border-gray-200 rounded px-2 py-1.5 bg-gray-100 text-gray-800">
+                                  {yieldPer != null ? yieldPer : '—'}
+                                </div>
+                                <p className="text-xs text-gray-500 mt-0.5">From Capacity Profile (Production) for selected product (read-only).</p>
                               </div>
-                              <p className="text-xs text-gray-500 mt-0.5">From Capacity Profile (Production) for selected product (read-only).</p>
-                            </div>
-                            <div>
-                              <label className="block text-xs font-medium text-gray-600 mb-0.5">Number of batches</label>
-                              <select
-                                value={selectedBatchIndex}
-                                onChange={(e) => setAddBatchSelectedBatchIndex(Number(e.target.value))}
-                                className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900 bg-white"
-                              >
-                                {numBatches != null && numBatches > 0
-                                  ? Array.from({ length: numBatches }, (_, i) => (
-                                      <option key={i} value={i}>{batchOrdinal(i + 1)} batch</option>
+                              
+                              <div>
+                                <label className="block text-xs font-medium text-gray-600 mb-0.5">Quantity of the Batch</label>
+                                <div className="w-full border border-gray-200 rounded px-2 py-1.5 bg-gray-100 text-gray-800">
+                                  {quantityOfBatch}
+                                </div>
+                                <p className="text-xs text-gray-500 mt-0.5">Pieces for the selected batch (read-only). This becomes Batch Qty on the saved row.</p>
+                              </div>
+
+                              <div>
+                                <label className="block text-xs font-medium text-gray-600 mb-0.5">Total Quantity</label>
+                                <input
+                                  type="number"
+                                  min={0}
+                                  value={addBatchForm.soQty}
+                                  onChange={(e) => setAddBatchForm((p) => ({ ...p, soQty: e.target.value === '' ? '' : Number(e.target.value) }))}
+                                  className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900"
+                                />
+                                <p className="text-xs text-gray-500 mt-0.5">
+                                  {`Note: Total Quantity value is prioritized more (if has value) for creating batch(es) compare to Sales Order Tab's Sales Order (Base Qty) field's value.`}
+                                </p>
+                              </div>
+
+                              <div>
+                                <label className="block text-xs font-medium text-gray-600 mb-0.5">Number of batches</label>
+                                <select
+                                  value={selectedBatchIndex}
+                                  onChange={(e) => setAddBatchSelectedBatchIndex(Number(e.target.value))}
+                                  className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900 bg-white"
+                                >
+                                  {numBatches != null && numBatches > 0
+                                    ? Array.from({ length: numBatches }, (_, i) => (
+                                      <option key={i} value={i}>{batchOrdinalLabel(i + 1)} batch</option>
                                     ))
-                                  : <option value={0}>—</option>}
-                              </select>
-                            </div>
-                            <div>
-                              <label className="block text-xs font-medium text-gray-600 mb-0.5">Quantity of the Batch</label>
-                              <div className="w-full border border-gray-200 rounded px-2 py-1.5 bg-gray-100 text-gray-800">
-                                {quantityOfBatch}
+                                    : <option value={0}>—</option>}
+                                </select>
                               </div>
-                              <p className="text-xs text-gray-500 mt-0.5">Pieces for the selected batch (read-only). This becomes Batch Qty on the saved row.</p>
-                            </div>
-                          </>
-                        );
-                      })()}
-                    </div>
-                  </Tabs.Content>
 
-                  <Tabs.Content value="sales" className="border border-gray-200 border-t-0 rounded-b-card p-3">
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      <div>
-                        <label className="block text-xs font-medium text-gray-600 mb-0.5">Start Sponge (time)</label>
-                        <input
-                          type="time"
-                          value={addBatchForm.startSponge}
-                          onChange={(e) => setAddBatchForm((p) => ({ ...p, startSponge: e.target.value || '00:00' }))}
-                          onFocus={() => setAddBatchValidationError('')}
-                          className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900"
-                        />
+                            </>
+                          );
+                        })()}
                       </div>
-                      <div>
-                        <label className="block text-xs font-medium text-gray-600 mb-0.5">Production line</label>
-                        <select
-                          value={addBatchForm.productionLineId}
-                          onChange={(e) => setAddBatchForm((p) => ({ ...p, productionLineId: e.target.value, product: '' }))}
-                          className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900"
-                        >
-                          {lines.map((line) => (
-                            <option key={line.id} value={line.id}>{line.name}</option>
-                          ))}
-                        </select>
-                      </div>
-                      <div>
-                        <label className="block text-xs font-medium text-gray-600 mb-0.5">Product</label>
-                        <select
-                          value={addBatchForm.product}
-                          onChange={(e) => setAddBatchForm((p) => ({ ...p, product: e.target.value }))}
-                          className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900"
-                        >
-                          <option value="">— Select product —</option>
-                          {(addBatchForm.productionLineId ? getRecipesForLine(addBatchForm.productionLineId) : recipeOptions).map((r) => (
-                            <option key={r.id} value={r.name}>{r.name}</option>
-                          ))}
-                        </select>
-                      </div>
+                    </Tabs.Content>
 
-                      {(() => {
-                        const computedSoCo = Math.max(0, (Number(addBatchForm.salesOrder) || 0) - (Number(addBatchForm.carryOverExcess) || 0));
-                        const computedTheorOutput = addBatchForm.theorOutputOverride !== undefined && addBatchForm.theorOutputOverride !== '' && !Number.isNaN(Number(addBatchForm.theorOutputOverride))
-                          ? Number(addBatchForm.theorOutputOverride)
-                          : computedSoCo + (Number(addBatchForm.exchangeForLoss) || 0) + (Number(addBatchForm.excess) || 0) + (Number(addBatchForm.samples) || 2);
-                        const yieldForProduct = addBatchForm.product && addBatchForm.productionLineId
-                          ? getYieldForProduct(addBatchForm.product, addBatchForm.productionLineId)
-                          : null;
-                        return (
-                          <>
-                            <div>
-                              <label className="block text-xs font-medium text-gray-600 mb-0.5">Sales Order (base qty)</label>
-                              <input
-                                type="number"
-                                min={0}
-                                value={addBatchForm.salesOrder}
-                                onChange={(e) => setAddBatchForm((p) => ({ ...p, salesOrder: e.target.value === '' ? '' : e.target.value }))}
-                                className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900"
-                                placeholder="e.g. 1090"
-                              />
-                            </div>
-                            <div>
-                              <label className="block text-xs font-medium text-gray-600 mb-0.5">Carry Over Excess</label>
-                              <input
-                                type="number"
-                                min={0}
-                                value={addBatchForm.carryOverExcess}
-                                onChange={(e) => setAddBatchForm((p) => ({ ...p, carryOverExcess: e.target.value === '' ? '' : Number(e.target.value) }))}
-                                className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900"
-                                placeholder="0"
-                              />
-                            </div>
-                            <div>
-                              <label className="block text-xs font-medium text-gray-600 mb-0.5">SO-CO Excess</label>
-                              <div className="w-full border border-gray-200 rounded px-2 py-1.5 bg-gray-100 text-gray-800">
-                                {computedSoCo}
+                    <Tabs.Content value="sales" className="border border-gray-200 border-t-0 rounded-b-card p-3">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div>
+                          <label className="block text-xs font-medium text-gray-600 mb-0.5">Start Sponge (time)</label>
+                          <input
+                            type="time"
+                            value={addBatchForm.startSponge}
+                            onChange={(e) => setAddBatchForm((p) => ({ ...p, startSponge: e.target.value || '00:00' }))}
+                            onFocus={() => setAddBatchValidationError('')}
+                            className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-medium text-gray-600 mb-0.5">Production line</label>
+                          <select
+                            value={addBatchForm.productionLineId}
+                            onChange={(e) => setAddBatchForm((p) => ({ ...p, productionLineId: e.target.value, product: '' }))}
+                            className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900"
+                          >
+                            {lines.map((line) => (
+                              <option key={line.id} value={line.id}>{line.name}</option>
+                            ))}
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-xs font-medium text-gray-600 mb-0.5">Product</label>
+                          <select
+                            value={addBatchForm.product}
+                            onChange={(e) => setAddBatchForm((p) => ({ ...p, product: e.target.value }))}
+                            className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900"
+                          >
+                            <option value="">— Select product —</option>
+                            {(addBatchForm.productionLineId ? getRecipesForLine(addBatchForm.productionLineId) : recipeOptions).map((r) => (
+                              <option key={r.id} value={r.name}>{r.name}</option>
+                            ))}
+                          </select>
+                        </div>
+
+                        {(() => {
+                          const computedSoCo = Math.max(0, (Number(addBatchForm.salesOrder) || 0) - (Number(addBatchForm.carryOverExcess) || 0));
+                          const computedTheorOutput = addBatchForm.theorOutputOverride !== undefined && addBatchForm.theorOutputOverride !== '' && !Number.isNaN(Number(addBatchForm.theorOutputOverride))
+                            ? Number(addBatchForm.theorOutputOverride)
+                            : computedSoCo + (Number(addBatchForm.exchangeForLoss) || 0) + (Number(addBatchForm.excess) || 0) + (Number(addBatchForm.samples) || 2);
+                          const yieldForProduct = addBatchForm.product && addBatchForm.productionLineId
+                            ? getYieldForProduct(addBatchForm.product, addBatchForm.productionLineId)
+                            : null;
+                          const split = computeModalBatchSplit(addBatchForm, getYieldForProduct, getCapacityForProduct);
+                          const { numBatches: splitNumBatches, batchQuantities: splitBatchQtys } = split;
+                          const salesSelectedIdx =
+                            splitNumBatches != null && splitNumBatches > 0
+                              ? Math.min(addBatchSelectedBatchIndex, splitNumBatches - 1)
+                              : 0;
+                          const salesQuantityOfBatch = splitBatchQtys[salesSelectedIdx] ?? '—';
+                          return (
+                            <>
+                              <div>
+                                <label className="block text-xs font-medium text-gray-600 mb-0.5">Sales Order (base qty)</label>
+                                <input
+                                  type="number"
+                                  min={0}
+                                  value={addBatchForm.salesOrder}
+                                  onChange={(e) => setAddBatchForm((p) => ({ ...p, salesOrder: e.target.value === '' ? '' : e.target.value }))}
+                                  className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900"
+                                  placeholder="e.g. 1090"
+                                />
                               </div>
-                            </div>
-                            <div>
-                              <label className="block text-xs font-medium text-gray-600 mb-0.5">Exchange for LOSS</label>
-                              <input
-                                type="number"
-                                value={addBatchForm.exchangeForLoss}
-                                onChange={(e) => setAddBatchForm((p) => ({ ...p, exchangeForLoss: e.target.value === '' ? '' : Number(e.target.value) }))}
-                                className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900"
-                              />
-                            </div>
-                            <div>
-                              <label className="block text-xs font-medium text-gray-600 mb-0.5">Excess</label>
-                              <input
-                                type="number"
-                                min={0}
-                                value={addBatchForm.excess}
-                                onChange={(e) => setAddBatchForm((p) => ({ ...p, excess: e.target.value === '' ? '' : Number(e.target.value) }))}
-                                className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900"
-                              />
-                            </div>
-                            <div>
-                              <label className="block text-xs font-medium text-gray-600 mb-0.5">Samples</label>
-                              <input
-                                type="number"
-                                min={0}
-                                value={addBatchForm.samples}
-                                onChange={(e) => setAddBatchForm((p) => ({ ...p, samples: e.target.value === '' ? '' : Number(e.target.value) }))}
-                                className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900"
-                              />
-                            </div>
-                            <div>
-                              <label className="block text-xs font-medium text-gray-600 mb-0.5">Theoretical Yield / Batch</label>
-                              <div className="w-full border border-gray-200 rounded px-2 py-1.5 bg-gray-100 text-gray-800">
-                                {yieldForProduct != null ? yieldForProduct : '—'}
+                              <div>
+                                <label className="block text-xs font-medium text-gray-600 mb-0.5">Carry Over Excess</label>
+                                <input
+                                  type="number"
+                                  min={0}
+                                  value={addBatchForm.carryOverExcess}
+                                  onChange={(e) => setAddBatchForm((p) => ({ ...p, carryOverExcess: e.target.value === '' ? '' : Number(e.target.value) }))}
+                                  className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900"
+                                  placeholder="0"
+                                />
                               </div>
-                              <p className="text-xs text-gray-500 mt-0.5">From Capacity Profile (Production) for selected product (read-only).</p>
-                            </div>
-                            <div className="sm:col-span-2">
-                              <label className="block text-xs font-medium text-gray-600 mb-0.5">Theoretical Output</label>
-                              <input
-                                type="number"
-                                min={0}
-                                value={addBatchForm.theorOutputOverride}
-                                onChange={(e) => setAddBatchForm((p) => ({ ...p, theorOutputOverride: e.target.value }))}
-                                placeholder={String(computedTheorOutput)}
-                                className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900"
-                              />
-                              <p className="text-xs text-gray-500 mt-0.5">SO-CO Excess + Exchange for LOSS + Excess + Samples. Leave empty to use computed, or type to override.</p>
-                            </div>
-                          </>
-                        );
-                      })()}
-                    </div>
-                  </Tabs.Content>
+                              <div>
+                                <label className="block text-xs font-medium text-gray-600 mb-0.5">SO-CO Excess</label>
+                                <div className="w-full border border-gray-200 rounded px-2 py-1.5 bg-gray-100 text-gray-800">
+                                  {computedSoCo}
+                                </div>
+                              </div>
+                              <div>
+                                <label className="block text-xs font-medium text-gray-600 mb-0.5">Exchange for LOSS</label>
+                                <input
+                                  type="number"
+                                  value={addBatchForm.exchangeForLoss}
+                                  onChange={(e) => setAddBatchForm((p) => ({ ...p, exchangeForLoss: e.target.value === '' ? '' : Number(e.target.value) }))}
+                                  className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900"
+                                />
+                              </div>
+                              <div>
+                                <label className="block text-xs font-medium text-gray-600 mb-0.5">Excess</label>
+                                <input
+                                  type="number"
+                                  min={0}
+                                  value={addBatchForm.excess}
+                                  onChange={(e) => setAddBatchForm((p) => ({ ...p, excess: e.target.value === '' ? '' : Number(e.target.value) }))}
+                                  className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900"
+                                />
+                              </div>
+                              <div>
+                                <label className="block text-xs font-medium text-gray-600 mb-0.5">Samples</label>
+                                <input
+                                  type="number"
+                                  min={0}
+                                  value={addBatchForm.samples}
+                                  onChange={(e) => setAddBatchForm((p) => ({ ...p, samples: e.target.value === '' ? '' : Number(e.target.value) }))}
+                                  className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900"
+                                />
+                              </div>
+                              <div>
+                                <AddScheduleYieldLabelWithCapacityTooltip capacity={split.capacity} />
+                                <div className="w-full border border-gray-200 rounded px-2 py-1.5 bg-gray-100 text-gray-800">
+                                  {yieldForProduct != null ? yieldForProduct : '—'}
+                                </div>
+                                <p className="text-xs text-gray-500 mt-0.5">From Capacity Profile (Production) for selected product (read-only).</p>
+                              </div>
+                              <div className="sm:col-span-2">
+                                <label className="block text-xs font-medium text-gray-600 mb-0.5">Theoretical Output</label>
+                                <input
+                                  type="number"
+                                  min={0}
+                                  value={addBatchForm.theorOutputOverride}
+                                  onChange={(e) => setAddBatchForm((p) => ({ ...p, theorOutputOverride: e.target.value }))}
+                                  placeholder={String(computedTheorOutput)}
+                                  className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900"
+                                />
+                                <p className="text-xs text-gray-500 mt-0.5">SO-CO Excess + Exchange for LOSS + Excess + Samples. Leave empty to use computed, or type to override.</p>
+                              </div>
+                              <div>
+                                <label className="block text-xs font-medium text-gray-600 mb-0.5">Number of batches</label>
+                                <select
+                                  value={salesSelectedIdx}
+                                  onChange={(e) => setAddBatchSelectedBatchIndex(Number(e.target.value))}
+                                  className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900 bg-white"
+                                >
+                                  {splitNumBatches != null && splitNumBatches > 0
+                                    ? Array.from({ length: splitNumBatches }, (_, i) => (
+                                      <option key={i} value={i}>{batchOrdinalLabel(i + 1)} batch</option>
+                                    ))
+                                    : <option value={0}>—</option>}
+                                </select>
+                              </div>
+                              <div>
+                                <label className="block text-xs font-medium text-gray-600 mb-0.5">Quantity of the Batch</label>
+                                <div className="w-full border border-gray-200 rounded px-2 py-1.5 bg-gray-100 text-gray-800">
+                                  {salesQuantityOfBatch}
+                                </div>
+                                <p className="text-xs text-gray-500 mt-0.5">Pieces for the selected batch (read-only). Matches what gets saved as Batch Qty per row.</p>
+                              </div>
 
-                  <Tabs.Content value="others" className="border border-gray-200 border-t-0 rounded-b-card p-3">
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      <div>
-                        <label className="block text-xs font-medium text-gray-600 mb-0.5">Timeblocker Start (time)</label>
-                        <input
-                          type="time"
-                          value={addBatchForm.startSponge}
-                          onChange={(e) => setAddBatchForm((p) => ({ ...p, startSponge: e.target.value || '00:00' }))}
-                          onFocus={() => setAddBatchValidationError('')}
-                          className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900"
-                        />
+                            </>
+                          );
+                        })()}
                       </div>
-                      <div>
-                        <label className="block text-xs font-medium text-gray-600 mb-0.5">Timeblocker End (time)</label>
-                        <input
-                          type="time"
-                          value={addBatchForm.breakEnd}
-                          onChange={(e) => setAddBatchForm((p) => ({ ...p, breakEnd: e.target.value || '' }))}
-                          onFocus={() => setAddBatchValidationError('')}
-                          className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900"
-                        />
+                    </Tabs.Content>
+
+                    <Tabs.Content value="others" className="border border-gray-200 border-t-0 rounded-b-card p-3">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div>
+                          <label className="block text-xs font-medium text-gray-600 mb-0.5">Timeblocker Start (time)</label>
+                          <input
+                            type="time"
+                            value={addBatchForm.startSponge}
+                            onChange={(e) => setAddBatchForm((p) => ({ ...p, startSponge: e.target.value || '00:00' }))}
+                            onFocus={() => setAddBatchValidationError('')}
+                            className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-medium text-gray-600 mb-0.5">Timeblocker End (time)</label>
+                          <input
+                            type="time"
+                            value={addBatchForm.breakEnd}
+                            onChange={(e) => setAddBatchForm((p) => ({ ...p, breakEnd: e.target.value || '' }))}
+                            onFocus={() => setAddBatchValidationError('')}
+                            className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900"
+                          />
+                        </div>
+                        <div className="sm:col-span-2 text-xs text-gray-500">
+                          Adds a time blocker (no product) that pushes downstream batches forward.
+                        </div>
+                        <div className="sm:col-span-2">
+                          <label className="block text-xs font-medium text-gray-600 mb-0.5">Description</label>
+                          <input
+                            type="text"
+                            value={addBatchForm.breakDescription}
+                            onChange={(e) => setAddBatchForm((p) => ({ ...p, breakDescription: e.target.value }))}
+                            onFocus={() => setAddBatchValidationError('')}
+                            className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900"
+                            placeholder="e.g. Cleaning / Maintenance / Buffer"
+                          />
+                          <p className="text-xs text-gray-500 mt-0.5">This will display in the Product column for this Time Blocker row.</p>
+                        </div>
                       </div>
-                      <div className="sm:col-span-2 text-xs text-gray-500">
-                        Adds a time blocker (no product) that pushes downstream batches forward.
-                      </div>
-                      <div className="sm:col-span-2">
-                        <label className="block text-xs font-medium text-gray-600 mb-0.5">Description</label>
-                        <input
-                          type="text"
-                          value={addBatchForm.breakDescription}
-                          onChange={(e) => setAddBatchForm((p) => ({ ...p, breakDescription: e.target.value }))}
-                          onFocus={() => setAddBatchValidationError('')}
-                          className="w-full border border-gray-300 rounded px-2 py-1.5 text-gray-900"
-                          placeholder="e.g. Cleaning / Maintenance / Buffer"
-                        />
-                        <p className="text-xs text-gray-500 mt-0.5">This will display in the Product column for this Time Blocker row.</p>
-                      </div>
-                    </div>
-                  </Tabs.Content>
-                </Tabs.Root>
-              </div>
+                    </Tabs.Content>
+                  </Tabs.Root>
+                </div>
+              </Tooltip.Provider>
             </div>
             <div className="p-4 border-t border-gray-200 flex justify-end gap-2">
               <Dialog.Close asChild>
@@ -1768,21 +1921,51 @@ export default function SchedulingView() {
         </Dialog.Portal>
       </Dialog.Root>
 
-      <Dialog.Root open={timeConflictOpen} onOpenChange={setTimeConflictOpen}>
+      <Dialog.Root
+        open={timeConflictOpen}
+        onOpenChange={(open) => {
+          setTimeConflictOpen(open);
+          if (!open) {
+            setPendingAddBatchPayload(null);
+            setTimeConflictInfo({
+              affectedRowIds: [],
+              snappedTo: null,
+              requestedInput: null,
+              insertKind: 'batch',
+            });
+          }
+        }}
+      >
         <Dialog.Portal>
           <Dialog.Overlay className="fixed inset-0 bg-black/50 z-50 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0" />
           <Dialog.Content className="fixed left-1/2 top-1/2 z-[60] w-full max-w-lg max-h-[90vh] -translate-x-1/2 -translate-y-1/2 rounded-lg border border-gray-200 bg-white shadow-lg p-4 flex flex-col">
             <Dialog.Title className="text-lg font-semibold text-gray-900">Time Conflict Affecting Other Batches</Dialog.Title>
             <Dialog.Description className="mt-2 text-sm text-gray-700">
-              The time you entered conflicts with the current schedule. If you proceed, this batch will be snapped to the nearest upcoming slot on this line, and the affected batches from that slot onward will be pushed forward and recalculated.
+              The time you entered conflicts with the current schedule. If you proceed, this{' '}
+              {timeConflictInfo?.insertKind === 'timeBlocker' ? 'time blocker' : 'batch'} will be snapped to the nearest upcoming slot on this line, and the affected batches from that slot onward will be pushed forward and recalculated.
             </Dialog.Description>
-            <div className="mt-3 text-sm text-gray-800">
+            <div className="mt-3 text-sm text-gray-800 space-y-2">
               {timeConflictInfo?.snappedTo ? (
-                <div className="text-xs text-gray-600">
+                <div className="text-xs text-gray-600 leading-snug">
                   Snapped to: <span className="font-medium text-gray-800">{formatTime12h(timeConflictInfo.snappedTo.startSponge)}</span>{' '}
                   <span className="text-gray-500">({formatDateRelative(timeConflictInfo.snappedTo.date)})</span>
+                  {timeConflictInfo.requestedInput?.startSponge ? (
+                    <>
+                      {', replacing your '}
+                      <span className="font-medium text-gray-800">{formatTime12h(timeConflictInfo.requestedInput.startSponge)}</span>
+                      {' input'}
+                      {timeConflictInfo.requestedInput.date &&
+                      String(timeConflictInfo.requestedInput.date).split('T')[0] !==
+                        String(timeConflictInfo.snappedTo.date || '').split('T')[0] ? (
+                        <span className="text-gray-500"> ({formatDateRelative(timeConflictInfo.requestedInput.date)})</span>
+                      ) : null}
+                    </>
+                  ) : null}
                 </div>
               ) : null}
+              <div className="text-xs text-gray-600 leading-snug">
+                <span className="font-medium text-gray-800">Reason:</span> You&apos;re inserting at a time when another batch on this line is still running — a process step has to finish before the line can take your entry. That&apos;s why we snap your start forward; anything scheduled from that slot onward gets re-timed.
+              </div>
               <div className="font-medium">Affected batches: {timeConflictInfo?.affectedRowIds?.length || 0}</div>
               {(() => {
                 const ids = timeConflictInfo?.affectedRowIds || [];
@@ -1802,14 +1985,7 @@ export default function SchedulingView() {
             </div>
             <div className="mt-4 flex justify-end gap-2">
               <Dialog.Close asChild>
-                <button
-                  type="button"
-                  className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 text-sm font-medium hover:bg-gray-50"
-                  onClick={() => {
-                    setPendingAddBatchPayload(null);
-                    setTimeConflictInfo({ affectedRowIds: [], snappedTo: null });
-                  }}
-                >
+                <button type="button" className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 text-sm font-medium hover:bg-gray-50">
                   Cancel
                 </button>
               </Dialog.Close>
@@ -1817,23 +1993,46 @@ export default function SchedulingView() {
                 type="button"
                 onClick={() => {
                   if (!pendingAddBatchPayload) return;
-                  const result = typeof insertBatchesWithReflow === 'function'
-                    ? insertBatchesWithReflow(pendingAddBatchPayload)
-                    : { success: false, error: 'Insert-with-reflow is not available.' };
+                  const kind = timeConflictInfo.insertKind || 'batch';
+                  const result =
+                    kind === 'timeBlocker'
+                      ? typeof insertBatchBreakWithReflow === 'function'
+                        ? insertBatchBreakWithReflow(pendingAddBatchPayload)
+                        : { success: false, error: 'Time blocker insert is not available.' }
+                      : typeof insertBatchesWithReflow === 'function'
+                        ? insertBatchesWithReflow(pendingAddBatchPayload)
+                        : { success: false, error: 'Insert-with-reflow is not available.' };
                   if (result?.success) {
                     setTimeConflictOpen(false);
                     setPendingAddBatchPayload(null);
-                    setTimeConflictInfo({ affectedRowIds: [], snappedTo: null });
+                    setTimeConflictInfo({
+                      affectedRowIds: [],
+                      snappedTo: null,
+                      requestedInput: null,
+                      insertKind: 'batch',
+                    });
                     closeAddBatchModal();
                   } else {
-                    setAddBatchValidationError(result?.error || 'Could not add batch.');
+                    setAddBatchValidationError(
+                      result?.error ||
+                        (kind === 'timeBlocker' ? 'Could not add time blocker.' : 'Could not add batch.')
+                    );
                     setTimeConflictOpen(false);
+                    setPendingAddBatchPayload(null);
+                    setTimeConflictInfo({
+                      affectedRowIds: [],
+                      snappedTo: null,
+                      requestedInput: null,
+                      insertKind: 'batch',
+                    });
                   }
                 }}
                 disabled={timeConflictCountdown > 0}
                 className="px-4 py-2 rounded-lg bg-primary text-white text-sm font-medium hover:bg-primary-dark disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                {timeConflictCountdown > 0 ? `Proceed & adjust schedule (${timeConflictCountdown})` : 'Proceed & adjust schedule'}
+                {timeConflictCountdown > 0
+                  ? `Proceed & adjust schedule (${timeConflictCountdown})`
+                  : `Proceed & adjust schedule (${1 + (timeConflictInfo?.affectedRowIds?.length || 0)})`}
               </button>
             </div>
           </Dialog.Content>

@@ -19,6 +19,28 @@ function defaultEquipmentBySection(sectionIds) {
   }, {});
 }
 
+// Mixing profiles used to store one `tag` string; now we keep `tags: string[]`. Dedupe case-insensitive, keep first spelling.
+function dedupeTagsPreservingOrder(raw) {
+  const seen = new Set();
+  const out = [];
+  for (const t of raw) {
+    const s = String(t ?? '').trim();
+    if (!s) continue;
+    const k = s.toLowerCase();
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(s);
+  }
+  return out;
+}
+
+function normalizeMixingProfileTagsFromRaw(mp) {
+  const legacy = mp.tag !== undefined && mp.tag !== null ? String(mp.tag).trim() : '';
+  const fromArr = Array.isArray(mp.tags) ? mp.tags.map((t) => String(t ?? '').trim()).filter(Boolean) : [];
+  const combined = fromArr.length > 0 ? fromArr : legacy ? [legacy] : [];
+  return dedupeTagsPreservingOrder(combined);
+}
+
 const DEFAULT_LOAF_CAPACITY = [
   { id: 'cap-8s', capacityName: '8s', productName: 'Everyday Bread 8s', capacity: 2340, yield: 1092, doughWeightKg: 275, totalDoughWeightKg: 505.31, gramsPerUnit: 1000 },
   { id: 'cap-12s', capacityName: '12s', productName: 'Everyday Bread 12s', capacity: 1575, yield: 728, doughWeightKg: 275, totalDoughWeightKg: 505.31, gramsPerUnit: 1000 },
@@ -65,7 +87,7 @@ function normalizeLine(l) {
     mixingProfilesByProcess[procId] = Array.isArray(list)
       ? list.map((mp) => ({
           id: mp.id || `mp-${procId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-          tag: mp.tag !== undefined && mp.tag !== null ? String(mp.tag).trim() : '',
+          tags: normalizeMixingProfileTagsFromRaw(mp),
           equipment: Array.isArray(mp.equipment)
             ? mp.equipment.map((e, idx) => ({
                 id: e.id,
@@ -149,6 +171,7 @@ function normalizeLine(l) {
         : Object.keys(eqMinutes).map((machineId) => ({ id: machineId, name: 'Unknown' }));
       mixingProfilesByProcess = { ...mixingProfilesByProcess, [pid]: [{
         id: `mp-${pid}-${Date.now()}-migrated`,
+        tags: [],
         equipment,
         equipmentMinutes: { ...eqMinutes },
         processTimes: ptList.map((x) => ({ id: x.id, name: x.name ?? '', minutes: Number(x.minutes) || 0 })),
@@ -608,7 +631,15 @@ export function getMixingProfiles(lineId, processId) {
   const line = lines.find((l) => l.id === lineId);
   if (!line || !line.mixingProfilesByProcess) return [];
   const list = line.mixingProfilesByProcess[processId];
-  return Array.isArray(list) ? list.map((mp) => ({ ...mp, equipment: [...(mp.equipment || [])], equipmentMinutes: { ...(mp.equipmentMinutes || {}) }, processTimes: (mp.processTimes || []).map((e) => ({ ...e })) })) : [];
+  return Array.isArray(list)
+    ? list.map((mp) => ({
+        ...mp,
+        tags: Array.isArray(mp.tags) ? [...mp.tags] : normalizeMixingProfileTagsFromRaw(mp),
+        equipment: [...(mp.equipment || [])],
+        equipmentMinutes: { ...(mp.equipmentMinutes || {}) },
+        processTimes: (mp.processTimes || []).map((e) => ({ ...e })),
+      }))
+    : [];
 }
 
 // sum all equipment minutes + process time minutes — UI shows this in the profile picker
@@ -631,7 +662,7 @@ export function addMixingProfile(lineId, processId) {
   const byProcess = { ...(line.mixingProfilesByProcess || {}) };
   const list = [...(byProcess[processId] || [])];
   const id = `mp-${processId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  list.push({ id, tag: '', equipment: [], equipmentMinutes: {}, processTimes: [] });
+  list.push({ id, tags: [], equipment: [], equipmentMinutes: {}, processTimes: [] });
   byProcess[processId] = list;
   lines = [...lines.slice(0, idx), { ...line, mixingProfilesByProcess: byProcess }, ...lines.slice(idx + 1)];
   persist();
@@ -658,23 +689,81 @@ export function addProfileTagForLine(lineId, tag) {
   return trimmed;
 }
 
+// Replaces the whole tag list with a single value (legacy callers / simple cases).
 export function setTagForMixingProfile(lineId, processId, profileId, tag) {
+  const trimmed = String(tag ?? '').trim();
+  return setTagsForMixingProfile(lineId, processId, profileId, trimmed ? [trimmed] : []);
+}
+
+export function setTagsForMixingProfile(lineId, processId, profileId, tags) {
   const idx = lines.findIndex((l) => l.id === lineId);
   if (idx === -1) return null;
+  const normalized = dedupeTagsPreservingOrder(Array.isArray(tags) ? tags : []);
   const line = lines[idx];
   const byProcess = { ...(line.mixingProfilesByProcess || {}) };
-  const list = (byProcess[processId] || []).map((mp) => mp.id === profileId ? { ...mp, tag: String(tag ?? '').trim() } : mp);
+  const list = (byProcess[processId] || []).map((mp) => (mp.id === profileId ? { ...mp, tags: normalized } : mp));
   byProcess[processId] = list;
   lines = [...lines.slice(0, idx), { ...line, mixingProfilesByProcess: byProcess }, ...lines.slice(idx + 1)];
   persist();
+  return normalized;
+}
+
+/** Tags on this process profile (order matters; duplicates dropped case-insensitively on add/normalize). */
+export function getTagsForMixingProfile(lineId, processId, profileId) {
   const profiles = getMixingProfiles(lineId, processId);
   const p = profiles.find((mp) => mp.id === profileId);
-  return p?.tag ?? '';
+  if (!p) return [];
+  return Array.isArray(p.tags) ? [...p.tags] : [];
 }
 
 export function getTagForMixingProfile(lineId, processId, profileId) {
-  const profiles = getMixingProfiles(lineId, processId);
-  return profiles.find((mp) => mp.id === profileId)?.tag ?? '';
+  const t = getTagsForMixingProfile(lineId, processId, profileId);
+  return t[0] ?? '';
+}
+
+export function addTagToMixingProfile(lineId, processId, profileId, tag) {
+  const trimmed = String(tag ?? '').trim();
+  if (!trimmed) return false;
+  const idx = lines.findIndex((l) => l.id === lineId);
+  if (idx === -1) return false;
+  const line = lines[idx];
+  const byProcess = { ...(line.mixingProfilesByProcess || {}) };
+  let added = false;
+  const list = (byProcess[processId] || []).map((mp) => {
+    if (mp.id !== profileId) return mp;
+    const cur = Array.isArray(mp.tags) ? [...mp.tags] : normalizeMixingProfileTagsFromRaw(mp);
+    if (cur.some((t) => t.toLowerCase() === trimmed.toLowerCase())) return mp;
+    added = true;
+    return { ...mp, tags: [...cur, trimmed] };
+  });
+  if (!added) return false;
+  byProcess[processId] = list;
+  lines = [...lines.slice(0, idx), { ...line, mixingProfilesByProcess: byProcess }, ...lines.slice(idx + 1)];
+  persist();
+  return true;
+}
+
+export function removeTagFromMixingProfile(lineId, processId, profileId, tagToRemove) {
+  const label = String(tagToRemove ?? '').trim();
+  if (!label) return false;
+  const idx = lines.findIndex((l) => l.id === lineId);
+  if (idx === -1) return false;
+  const line = lines[idx];
+  const byProcess = { ...(line.mixingProfilesByProcess || {}) };
+  let removed = false;
+  const list = (byProcess[processId] || []).map((mp) => {
+    if (mp.id !== profileId) return mp;
+    const cur = Array.isArray(mp.tags) ? [...mp.tags] : normalizeMixingProfileTagsFromRaw(mp);
+    const next = cur.filter((t) => t !== label);
+    if (next.length === cur.length) return mp;
+    removed = true;
+    return { ...mp, tags: next };
+  });
+  if (!removed) return false;
+  byProcess[processId] = list;
+  lines = [...lines.slice(0, idx), { ...line, mixingProfilesByProcess: byProcess }, ...lines.slice(idx + 1)];
+  persist();
+  return true;
 }
 
 export function deleteMixingProfile(lineId, processId, profileId) {
@@ -943,15 +1032,17 @@ export function getStaggerMinutesFromMixingProfiles(profiles) {
     return String(a.id).localeCompare(String(b.id));
   });
 
-  // stagger = smallest cumulative minutes among flagged steps (earliest breakpoint wins)
-  let cumulative = 0;
+  // Pipelined stagger = this step's own minutes only for each Pipeline-checked row (not cumulative through it, not minus previous).
+  // Gap 30 with Pipeline on Gap → 30 minutes between batch starts, even if Sponge 7 is before it in sequence.
+  // Several boxes checked → smallest duration wins (one stagger number for the profile).
   const selectedSet = new Set(selectedKeys.map((k) => `${k.kind}:${k.id}`));
   let best = null;
-  for (const s of steps) {
-    cumulative += Number(s.minutes) || 0;
-    if (selectedSet.has(`${s.kind}:${s.id}`)) {
-      best = best === null ? cumulative : Math.min(best, cumulative);
-    }
+  for (let i = 0; i < steps.length; i++) {
+    const s = steps[i];
+    if (!selectedSet.has(`${s.kind}:${s.id}`)) continue;
+    const thisMins = Number(s.minutes) || 0;
+    const candidate = Math.max(0, thisMins);
+    best = best === null ? candidate : Math.min(best, candidate);
   }
   return Math.max(0, best ?? 0);
 }

@@ -15,6 +15,27 @@ import { getLines, getProcessesForLine, getMixingProfiles, getProfileTotalMinute
 import { updateProductNameInRows } from '../store/planStore';
 import { useLinesVersion, useRecipesVersion } from '../hooks/useConfigStores';
 
+// Process profiles store tags on `tags[]` (plus legacy `tag` string). Recipe picker search must match any tag, not only the old single field.
+function profileTagsForSearch(p) {
+  const parts = [];
+  if (Array.isArray(p.tags)) {
+    for (const t of p.tags) {
+      const s = String(t ?? '').trim();
+      if (s) parts.push(s.toLowerCase());
+    }
+  }
+  const leg = String(p.tag ?? '').trim().toLowerCase();
+  if (leg) parts.push(leg);
+  return parts.join(' ');
+}
+
+function profileTagsDisplayLine(p) {
+  const tags = Array.isArray(p.tags) ? p.tags.map((t) => String(t ?? '').trim()).filter(Boolean) : [];
+  const leg = p.tag && String(p.tag).trim();
+  if (leg && !tags.some((t) => t.toLowerCase() === leg.toLowerCase())) tags.push(leg);
+  return tags.length ? tags.join(', ') : '';
+}
+
 export default function RecipesView() {
   const { version: recipesVersion } = useRecipesVersion();
   const { version: linesVersion } = useLinesVersion();
@@ -101,8 +122,8 @@ export default function RecipesView() {
     const filtered = q
       ? profiles.filter((p) => {
           const mins = String(getProfileTotalMinutes(lineId, procId, p.id));
-          const tag = String(p.tag ?? '').toLowerCase();
-          return mins.includes(q) || tag.includes(q);
+          const tagHaystack = profileTagsForSearch(p);
+          return mins.includes(q) || tagHaystack.includes(q);
         })
       : profiles;
     const selected = selectedProfileId ? profiles.find((p) => p.id === selectedProfileId) : null;
@@ -160,16 +181,24 @@ export default function RecipesView() {
                 >
                   — Select —
                 </button>
-                {filtered.map((p) => (
-                  <button
-                    key={p.id}
-                    type="button"
-                    onClick={() => { onSelect(p.id); setProfilePickerOpenKey(null); setProfilePickerQuery(''); setProfilePickerBounds(null); }}
-                    className={`w-full text-left px-3 py-2 text-sm hover:bg-gray-50 ${p.id === selectedProfileId ? 'bg-primary/5' : ''}`}
-                  >
-                    <span className="tabular-nums">{profileOptionLabel(lineId, procId, p)}</span>
-                  </button>
-                ))}
+                {filtered.map((p) => {
+                  const tagLine = profileTagsDisplayLine(p);
+                  return (
+                    <button
+                      key={p.id}
+                      type="button"
+                      onClick={() => { onSelect(p.id); setProfilePickerOpenKey(null); setProfilePickerQuery(''); setProfilePickerBounds(null); }}
+                      className={`w-full text-left px-3 py-2 text-sm hover:bg-gray-50 ${p.id === selectedProfileId ? 'bg-primary/5' : ''}`}
+                    >
+                      <span className="tabular-nums font-medium text-gray-900">{profileOptionLabel(lineId, procId, p)}</span>
+                      {tagLine ? (
+                        <span className="block text-xs text-gray-500 mt-0.5 truncate" title={tagLine}>
+                          {tagLine}
+                        </span>
+                      ) : null}
+                    </button>
+                  );
+                })}
                 {filtered.length === 0 && (
                   <div className="px-3 py-2 text-sm text-gray-500">No matches.</div>
                 )}

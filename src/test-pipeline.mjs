@@ -24,16 +24,22 @@ function getStaggerMinutesFromMixingProfiles(profiles) {
   for (const pt of processTimes) {
     steps.push({ kind: 'processTime', id: pt.id, order: Number(pt.order) || null, minutes: pt.minutes != null && !Number.isNaN(Number(pt.minutes)) ? Number(pt.minutes) : 0 });
   }
-  steps.sort((a, b) => (a.order ?? 1e9) - (b.order ?? 1e9));
+  steps.sort((a, b) => {
+    const ao = a.order ?? Number.POSITIVE_INFINITY;
+    const bo = b.order ?? Number.POSITIVE_INFINITY;
+    if (ao !== bo) return ao - bo;
+    if (a.kind !== b.kind) return a.kind.localeCompare(b.kind);
+    return String(a.id).localeCompare(String(b.id));
+  });
 
-  let cumulative = 0;
   const selectedSet = new Set(selectedKeys.map((k) => `${k.kind}:${k.id}`));
   let best = null;
-  for (const s of steps) {
-    cumulative += Number(s.minutes) || 0;
-    if (selectedSet.has(`${s.kind}:${s.id}`)) {
-      best = best === null ? cumulative : Math.min(best, cumulative);
-    }
+  for (let i = 0; i < steps.length; i++) {
+    const s = steps[i];
+    if (!selectedSet.has(`${s.kind}:${s.id}`)) continue;
+    const thisMins = Number(s.minutes) || 0;
+    const candidate = Math.max(0, thisMins);
+    best = best === null ? candidate : Math.min(best, candidate);
   }
   return Math.max(0, best ?? 0);
 }
@@ -61,10 +67,10 @@ assert(getStaggerMinutesFromMixingProfiles([{ processTimes: [] }]) === 0, 'profi
 assert(getStaggerMinutesFromMixingProfiles([{ processTimes: [{ id: 'pt1', name: 'Anything', minutes: 30, order: 2, isPipelineStagger: true }] }]) === 30, 'processTime selected => minutes');
 assert(getStaggerMinutesFromMixingProfiles([{ processTimes: [{ name: 'Anything', minutes: 0, isPipelineStagger: true }] }]) === 0, 'explicit stagger 0 => 0');
 assert(getStaggerMinutesFromMixingProfiles([{ processTimes: [{ name: 'A', minutes: 25, isPipelineStagger: true }] }]) === 25, 'explicit stagger 25 => 25');
-assert(getStaggerMinutesFromMixingProfiles([{ processTimes: [{ id: 'a', name: 'Sponge', minutes: 10, order: 1 }, { id: 'b', name: 'Stagger', minutes: 30, order: 2, isPipelineStagger: true }] }]) === 40, 'cumulative up to selected => 10+30');
-assert(getStaggerMinutesFromMixingProfiles([{ equipment: [{ id: 'm1', name: 'Mixer', order: 1, isPipelineStagger: true }], equipmentMinutes: { m1: 7 }, processTimes: [{ id: 'pt1', name: 'X', minutes: 30, order: 2 }] }]) === 7, 'equipment selected => equipment minutes');
-assert(getStaggerMinutesFromMixingProfiles([{ equipment: [{ id: 'm1', name: 'Mixer', order: 1 }], equipmentMinutes: { m1: 7 }, processTimes: [{ id: 'pt1', name: 'Gap', minutes: 30, order: 2, isPipelineStagger: true }] }]) === 37, 'mixed steps cumulative => 7+30');
-assert(getStaggerMinutesFromMixingProfiles([{ equipment: [{ id: 'm1', name: 'Mixer', order: 1, isPipelineStagger: true }], equipmentMinutes: { m1: 7 }, processTimes: [{ id: 'pt1', name: 'Gap', minutes: 30, order: 2, isPipelineStagger: true }] }]) === 7, 'multiple selected => earliest breakpoint => 7');
+assert(getStaggerMinutesFromMixingProfiles([{ processTimes: [{ id: 'a', name: 'Sponge', minutes: 10, order: 1 }, { id: 'b', name: 'Stagger', minutes: 30, order: 2, isPipelineStagger: true }] }]) === 30, 'flagged step uses own minutes only');
+assert(getStaggerMinutesFromMixingProfiles([{ equipment: [{ id: 'm1', name: 'Mixer', order: 1, isPipelineStagger: true }], equipmentMinutes: { m1: 7 }, processTimes: [{ id: 'pt1', name: 'X', minutes: 30, order: 2 }] }]) === 7, 'equipment flagged => its 7 min');
+assert(getStaggerMinutesFromMixingProfiles([{ equipment: [{ id: 'm1', name: 'Mixer', order: 1 }], equipmentMinutes: { m1: 7 }, processTimes: [{ id: 'pt1', name: 'Gap', minutes: 30, order: 2, isPipelineStagger: true }] }]) === 30, 'Gap pipeline => 30 only, sponge ignored for stagger');
+assert(getStaggerMinutesFromMixingProfiles([{ equipment: [{ id: 'm1', name: 'Mixer', order: 1, isPipelineStagger: true }], equipmentMinutes: { m1: 7 }, processTimes: [{ id: 'pt1', name: 'Gap', minutes: 30, order: 2, isPipelineStagger: true }] }]) === 7, 'multiple checked => min(7,30) => 7');
 
 // --- addMinutesToTime ---
 assert(addMinutesToTime('08:00', 30) === '08:30', '08:00 + 30 => 08:30');

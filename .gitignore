@@ -13,8 +13,9 @@ pnpm-debug.log*
 .env.example
 .cursor/
 
-# Goal and reference assets (spreadsheets, docs) — not committed
+# Local goal / planning folder at repo root
 _goal/
+
 _references/
 
 # Dev-only extraction scripts and outputs — not committed

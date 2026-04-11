@@ -215,6 +215,7 @@ function buildSnapshot() {
     addBatchesFromModal,
     previewInsertBatchesWithReflow,
     insertBatchesWithReflow,
+    previewInsertBatchBreakWithReflow,
     insertBatchBreakWithReflow,
     previewSwapOrderBetweenRows,
     reorderRows,
@@ -260,8 +261,7 @@ function getStaggerMinutesForProduct(lineId, productName, recipesForLine, stagge
   let offsetBeforeThisProcess = 0;
   let best = null;
 
-  // Earliest breakpoint across any selected process profile decides the stagger offset.
-  // CandidateOffset = (sum of durations of processes before X) + (earliest pipeline breakpoint minutes within X)
+  // Smallest stagger candidate across processes: offset before that process + pipeline minutes inside its profile (checked step's own duration only — see getStaggerMinutesFromMixingProfiles).
   for (const proc of lineProcesses) {
     const selectedProfileId = profileIds?.[proc.id] || profileIds?.[String(proc.id)] || '';
 
@@ -286,23 +286,19 @@ function getStaggerMinutesForProduct(lineId, productName, recipesForLine, stagge
   return v;
 }
 
-export function insertBatchBreakWithReflow(payload) {
+// Dry-run for the "By Others" time blocker — same snap + affected-row set as insertBatchBreakWithReflow, no mutations.
+// UI uses this so the Time Conflict modal matches what insert will actually do.
+export function previewInsertBatchBreakWithReflow(payload) {
   const lineId = payload.productionLineId || getLines()[0]?.id || 'line-loaf';
   const dateStr = payload.date && typeof payload.date === 'string' ? payload.date.split('T')[0] : toDateString(state.planDate);
-  const startSponge = payload.startSponge && /^\d{1,2}:\d{2}$/.test(String(payload.startSponge).trim()) ? String(payload.startSponge).trim() : '00:00';
-  const breakEnd = payload.breakEnd && /^\d{1,2}:\d{2}$/.test(String(payload.breakEnd).trim()) ? String(payload.breakEnd).trim() : '';
-  if (!breakEnd) return { success: false, error: 'Batch Break End is required.' };
-  const startM = parseTimeToMinutes(startSponge);
-  const endM = parseTimeToMinutes(breakEnd);
-  if (endM <= startM) return { success: false, error: 'Batch Break End must be after Batch Break Start.' };
-  const duration = endM - startM;
-
-  const recipesForLine = getRecipesForLine(lineId);
-  const staggerCache = new Map();
-
-  // snap to grid / detect overlap — same idea as inserting a batch, but breaks don't need a product picked
+  const startSponge =
+    payload.startSponge && /^\d{1,2}:\d{2}$/.test(String(payload.startSponge).trim())
+      ? String(payload.startSponge).trim()
+      : '00:00';
   const insertStartMs = new Date(dateStr + 'T' + startSponge).getTime();
   const lineRows = state.rows.filter((r) => r.productionLineId === lineId && (r.date || '') === dateStr);
+  if (lineRows.length === 0) return { hasConflict: false, affectedRowIds: [], snappedTo: null };
+
   const starts = lineRows
     .map((r) => ({ row: r, startMs: computeRowStartEndMs(r)?.startMs ?? null }))
     .filter((x) => x.startMs != null)
@@ -322,6 +318,57 @@ export function insertBatchBreakWithReflow(payload) {
     snappedDate = latest.date;
     snappedStart = latest.endBatch;
   }
+
+  const affectedRowIds = lineRows
+    .map((r) => ({ r, se: computeRowStartEndMs(r) }))
+    .filter((x) => x.se && x.se.startMs >= snappedStartMs)
+    .sort((a, b) => a.se.startMs - b.se.startMs)
+    .map((x) => x.r.id);
+
+  const snappedDateNorm = (snappedDate || '').split('T')[0];
+  const didSnap = snappedDateNorm !== dateStr || snappedStart !== startSponge;
+  return {
+    hasConflict: affectedRowIds.length > 0 || didSnap,
+    affectedRowIds,
+    snappedTo: didSnap ? { date: snappedDateNorm, startSponge: snappedStart } : null,
+  };
+}
+
+export function insertBatchBreakWithReflow(payload) {
+  const lineId = payload.productionLineId || getLines()[0]?.id || 'line-loaf';
+  const dateStr = payload.date && typeof payload.date === 'string' ? payload.date.split('T')[0] : toDateString(state.planDate);
+  const startSponge = payload.startSponge && /^\d{1,2}:\d{2}$/.test(String(payload.startSponge).trim()) ? String(payload.startSponge).trim() : '00:00';
+  const breakEnd = payload.breakEnd && /^\d{1,2}:\d{2}$/.test(String(payload.breakEnd).trim()) ? String(payload.breakEnd).trim() : '';
+  if (!breakEnd) return { success: false, error: 'Batch Break End is required.' };
+  const startM = parseTimeToMinutes(startSponge);
+  const endM = parseTimeToMinutes(breakEnd);
+  if (endM <= startM) return { success: false, error: 'Batch Break End must be after Batch Break Start.' };
+  const duration = endM - startM;
+
+  // Same idea as insertBatchesWithReflow: can't place a blocker entirely in the past when the row date is today.
+  const now = new Date();
+  const todayStr = toDateString(now);
+  if (dateStr === todayStr) {
+    const nowStartOfMinute = Math.floor(now.getTime() / 60000) * 60000;
+    const reqStartMs = new Date(`${dateStr}T${startSponge}`).getTime();
+    if (Number.isNaN(reqStartMs) || reqStartMs < nowStartOfMinute) {
+      return { success: false, error: 'When the schedule date is today, time blocker start cannot be in the past.' };
+    }
+    const reqEndMs = new Date(`${dateStr}T${breakEnd}`).getTime();
+    if (endM > startM && !Number.isNaN(reqEndMs) && reqEndMs < nowStartOfMinute) {
+      return { success: false, error: 'When the schedule date is today, time blocker end cannot be in the past.' };
+    }
+  }
+
+  const preview = previewInsertBatchBreakWithReflow(payload);
+  const recipesForLine = getRecipesForLine(lineId);
+  const staggerCache = new Map();
+
+  const snappedDate = preview.snappedTo ? preview.snappedTo.date : dateStr;
+  const snappedStart = preview.snappedTo ? preview.snappedTo.startSponge : startSponge;
+  const snappedStartMs = new Date(snappedDate + 'T' + snappedStart).getTime();
+  const lineRows = state.rows.filter((r) => r.productionLineId === lineId && (r.date || '') === dateStr);
+  const affectedSet = new Set(preview.affectedRowIds || []);
 
   const createdAtMs = Date.now();
   const createdAtIso = new Date(createdAtMs).toISOString();
@@ -352,14 +399,6 @@ export function insertBatchBreakWithReflow(payload) {
   const { endDough, endBatch } = computeEndTimesForRowPreservingType(newBreakRow);
   newBreakRow.endDough = endDough;
   newBreakRow.endBatch = endBatch;
-
-  const affectedSet = new Set(
-    lineRows
-      .map((r) => ({ r, se: computeRowStartEndMs(r) }))
-      .filter((x) => x.se && x.se.startMs >= snappedStartMs)
-      .sort((a, b) => a.se.startMs - b.se.startMs)
-      .map((x) => x.r.id)
-  );
 
   // push everything that started after the break forward
   const affectedRows = lineRows
