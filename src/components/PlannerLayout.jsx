@@ -10,6 +10,7 @@ import DashboardView from './DashboardView';
 import SchedulingView from './SchedulingView';
 import RecipesView from './RecipesView';
 import ProductionView from './ProductionView';
+import HelpView from './HelpView';
 
 const PAGES = { dashboard: 'dashboard', production: 'production', recipes: 'recipes', scheduling: 'scheduling', settings: 'settings', help: 'help' };
 
@@ -41,6 +42,7 @@ export default function PlannerLayout() {
     if (page === PAGES.dashboard) return <DashboardView />;
     if (page === PAGES.recipes) return <RecipesView />;
     if (page === PAGES.production) return <ProductionView />;
+    if (page === PAGES.help) return <HelpView />;
     return (
       <div className="flex-1 p-6 flex items-center justify-center text-muted">
         <p className="text-base sm:text-lg md:text-xl text-muted">{page} — Coming soon</p>
@@ -78,7 +80,7 @@ export default function PlannerLayout() {
           collapsed={sidebarCollapsed}
           onToggleCollapse={() => setSidebarCollapsed((c) => !c)}
         />
-        <main className="flex-1 min-w-0 overflow-auto w-full">
+        <main className="flex flex-1 min-h-0 min-w-0 flex-col overflow-auto w-full">
           {renderMain()}
         </main>
       </div>
