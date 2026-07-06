@@ -2,6 +2,7 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
 import App from './App';
+import { ROUTER_BASENAME } from './constants/appBase';
 import { setPlannerForceLocalOnly } from './lib/supabase';
 import './index.css';
 
@@ -16,7 +17,7 @@ if (import.meta.env.DEV) {
 
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
-    <BrowserRouter>
+    <BrowserRouter basename={ROUTER_BASENAME}>
       <App />
     </BrowserRouter>
   </React.StrictMode>

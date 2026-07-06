@@ -80,7 +80,7 @@ export default function Topbar({ onMenuClick }) {
           <Menu className="w-6 h-6" />
         </button>
         <img
-          src="/images/logo.png"
+          src={`${import.meta.env.BASE_URL}images/logo.png`}
           alt=""
           className="w-6 h-6 sm:w-7 sm:h-7 md:w-8 md:h-8 object-contain shrink-0 block"
           aria-hidden
