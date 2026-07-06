@@ -1,7 +1,7 @@
 import { ExternalLink, Download } from 'lucide-react';
 
 // Served from /public/docs — same content as repo root "Order Production Planner App Manual.pdf" (copy on deploy if you update the root file).
-const MANUAL_PDF_PATH = '/docs/order-production-planner-app-manual.pdf';
+const MANUAL_PDF_PATH = `${import.meta.env.BASE_URL}docs/order-production-planner-app-manual.pdf`;
 
 export default function HelpView() {
   const manualUrl = `${MANUAL_PDF_PATH}`;

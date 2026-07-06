@@ -1,5 +1,28 @@
 {
   "rewrites": [
-    { "source": "/((?!assets/).*)", "destination": "/index.html" }
+    {
+      "source": "/demo/production-order-planner/assets/:path*",
+      "destination": "/assets/:path*"
+    },
+    {
+      "source": "/demo/production-order-planner/images/:path*",
+      "destination": "/images/:path*"
+    },
+    {
+      "source": "/demo/production-order-planner/docs/:path*",
+      "destination": "/docs/:path*"
+    },
+    {
+      "source": "/demo/production-order-planner/favicon.svg",
+      "destination": "/favicon.svg"
+    },
+    {
+      "source": "/demo/production-order-planner",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/demo/production-order-planner/:path*",
+      "destination": "/index.html"
+    }
   ]
 }
